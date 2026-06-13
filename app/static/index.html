@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vectile — Image Vectorizer</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="2" width="10" height="10" rx="2" fill="var(--accent)"/>
+        <rect x="16" y="2" width="10" height="10" rx="2" fill="var(--accent2)"/>
+        <rect x="2" y="16" width="10" height="10" rx="2" fill="var(--accent2)"/>
+        <rect x="16" y="16" width="10" height="10" rx="2" fill="var(--accent)"/>
+      </svg>
+      <span class="logo-text">Vectile</span>
+    </div>
+    <span class="tagline">Vectorize &amp; Tile for Print</span>
+  </header>
+
+  <main class="workspace" data-active-tab="original">
+
+    <!-- ═══════════════════ LEFT: CONTEXT-AWARE CONTROLS ═══════════════════ -->
+    <aside class="panel panel-controls" id="panel-controls">
+
+      <!-- Upload (always visible) -->
+      <section class="section" data-tab-context="all">
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload image or PDF">
+          <svg class="dropzone-icon" viewBox="0 0 48 48" fill="none">
+            <path d="M24 8v24M14 18l10-10 10 10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M8 36h32" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+          <p class="dropzone-text">Drop image or PDF here<br/><span>or click to browse</span></p>
+          <input type="file" id="file-input" accept="image/*,.pdf" hidden />
+        </div>
+        <div id="upload-info" class="upload-info hidden"></div>
+      </section>
+
+      <!-- ═════ VECTORIZE-ONLY sections ═════ -->
+
+      <section class="section" data-tab-context="vectorize" id="pdf-section" style="display:none">
+        <h3 class="section-title">PDF Settings</h3>
+        <div class="control-row">
+          <label for="pdf-page">Page</label>
+          <div class="page-stepper">
+            <button id="pdf-prev" class="btn-icon" aria-label="Previous page">&#8249;</button>
+            <span id="pdf-page-label">1 / 1</span>
+            <button id="pdf-next" class="btn-icon" aria-label="Next page">&#8250;</button>
+          </div>
+        </div>
+        <div class="control-row">
+          <label for="pdf-dpi">Render DPI</label>
+          <div class="slider-group">
+            <input type="range" id="pdf-dpi" min="72" max="600" step="25" value="200" />
+            <output for="pdf-dpi" id="pdf-dpi-val">200</output>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" data-tab-context="vectorize">
+        <h3 class="section-title">Mode Preset</h3>
+        <select id="preset-select" class="full-select">
+          <option value="">— Custom —</option>
+        </select>
+      </section>
+
+      <section class="section" data-tab-context="vectorize">
+        <h3 class="section-title">Engine</h3>
+        <div class="engine-tabs" id="engine-tabs" role="group"></div>
+        <p class="engine-desc" id="engine-desc"></p>
+      </section>
+
+      <section class="section" data-tab-context="vectorize">
+        <h3 class="section-title">Pre-trace</h3>
+        <div class="control-row">
+          <label for="resize-preview">Resize for preview</label>
+          <label class="toggle">
+            <input type="checkbox" id="resize-preview" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="control-row">
+          <label for="quantize-colors">Reduce colors</label>
+          <div class="slider-group">
+            <input type="range" id="quantize-colors" min="0" max="32" step="1" value="0" />
+            <output for="quantize-colors" id="quantize-colors-val">Off</output>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" data-tab-context="vectorize">
+        <h3 class="section-title">Parameters</h3>
+        <div id="param-controls"></div>
+      </section>
+
+      <section class="section actions" data-tab-context="vectorize">
+        <button class="btn btn-ghost" id="btn-reset">Reset</button>
+        <button class="btn btn-primary" id="btn-download" disabled>Download SVG</button>
+      </section>
+
+      <!-- ═════ PRINT-ONLY sections ═════ -->
+
+      <div id="print-controls" class="print-controls" data-tab-context="print">
+        <div id="print-placeholder" class="print-no-image-hint">
+          <p><strong>No image yet.</strong> Vectorize one in the other tabs first; settings here are still editable.</p>
+        </div>
+
+        <div id="print-controls-body">
+          <section class="section">
+            <div class="control-row">
+              <label>Units</label>
+              <div class="engine-tabs" id="print-units-tabs">
+                <button class="engine-tab active" data-print-units="mm">mm</button>
+                <button class="engine-tab" data-print-units="in">inches</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-title">Mode</h3>
+            <div class="engine-tabs" id="print-mode-tabs" role="group">
+              <button class="engine-tab active" data-print-mode="tile">Tile (multi-page)</button>
+              <button class="engine-tab" data-print-mode="single">Single page</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-title">Paper</h3>
+            <div class="control-row">
+              <label for="print-paper">Size</label>
+              <select id="print-paper" class="full-select"></select>
+            </div>
+            <div class="control-row" id="print-custom-row" style="display:none">
+              <label><span data-unit-label>Custom (mm)</span></label>
+              <div class="size-inputs">
+                <input type="number" id="print-custom-w" min="50" max="2000" step="1" value="210" />
+                <span>&times;</span>
+                <input type="number" id="print-custom-h" min="50" max="2000" step="1" value="297" />
+              </div>
+            </div>
+            <div class="control-row" id="print-orientation-row">
+              <label>Orientation</label>
+              <div class="engine-tabs">
+                <button class="engine-tab active" data-print-orientation="portrait">Portrait</button>
+                <button class="engine-tab" data-print-orientation="landscape">Landscape</button>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="print-margin">Margin <span data-unit-label>(mm)</span></label>
+              <div class="slider-group">
+                <input type="range" id="print-margin" min="0" max="30" step="1" value="10" />
+                <output id="print-margin-val">10</output>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-title">Poster size</h3>
+            <div class="control-row">
+              <label>Specify by</label>
+              <select id="print-poster-mode" class="full-select">
+                <option value="grid" selected>Tile grid (cols x rows)</option>
+                <option value="dimensions">Final dimensions</option>
+                <option value="scale">Scale (%)</option>
+              </select>
+            </div>
+            <div id="print-grid-row" class="control-row">
+              <label>Tile grid</label>
+              <div class="size-inputs">
+                <input type="number" id="print-grid-cols" min="1" max="20" step="1" value="2" />
+                <span>&times;</span>
+                <input type="number" id="print-grid-rows" min="1" max="20" step="1" value="2" />
+              </div>
+            </div>
+            <div id="print-dim-row" class="control-row" style="display:none">
+              <label>Final size <span data-unit-label>(mm)</span></label>
+              <div class="size-inputs">
+                <input type="number" id="print-poster-w" min="10" max="6000" step="10" value="420" />
+                <button class="lock-btn locked" id="print-aspect-lock" title="Lock aspect ratio to source image" aria-label="Lock aspect ratio">
+                  <span class="lock-icon" aria-hidden="true"></span>
+                </button>
+                <input type="number" id="print-poster-h" min="10" max="6000" step="10" value="594" />
+              </div>
+            </div>
+            <div id="print-scale-row" class="control-row" style="display:none">
+              <label>Scale</label>
+              <div class="slider-group">
+                <input type="range" id="print-scale" min="50" max="800" step="10" value="200" />
+                <output id="print-scale-val">200%</output>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-title">Image placement</h3>
+            <div class="control-row">
+              <label>Fit</label>
+              <select id="print-image-fit" class="full-select">
+                <option value="contain">Contain (fit inside)</option>
+                <option value="cover">Cover (fill, may crop)</option>
+                <option value="manual">Manual</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <label>Rotation</label>
+              <div class="slider-group">
+                <input type="range" id="print-image-rot" min="0" max="359" step="1" value="0" />
+                <output id="print-image-rot-val">0&deg;</output>
+              </div>
+            </div>
+            <div class="actions" style="display:flex; gap:6px; padding:6px 0;">
+              <button class="btn btn-ghost btn-sm" id="btn-image-reset" style="flex:1">Reset placement</button>
+              <button class="btn btn-ghost btn-sm" id="btn-toggle-grid" style="flex:1">Hide grid</button>
+            </div>
+            <p class="hint-text">All interactions target the <strong>image</strong>. The grid is fixed to the canvas size. <strong>Drag</strong> to move, <strong>scroll-wheel</strong> to scale, <strong>drag the rotate grip</strong> to rotate. Hide the grid to inspect the image freely.</p>
+          </section>
+
+          <section class="section" id="print-overlap-section">
+            <h3 class="section-title">Tile overlap</h3>
+            <div class="control-row">
+              <label for="print-overlap">Overlap <span data-unit-label>(mm)</span></label>
+              <div class="slider-group">
+                <input type="range" id="print-overlap" min="0" max="50" step="1" value="10" />
+                <output id="print-overlap-val">10</output>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-title">Decorations</h3>
+            <div class="param-row">
+              <label data-hint="Faint shading on the strips that overlap with neighbours">Overlap shade</label>
+              <input type="checkbox" id="deco-overlap-shade" checked />
+            </div>
+            <div class="param-row">
+              <label data-hint="L-shaped corner ticks just outside the trim line">Crop marks</label>
+              <input type="checkbox" id="deco-crop-marks" checked />
+            </div>
+            <div class="param-row">
+              <label data-hint="A1, A2... grid coordinates printed on each tile">Page labels</label>
+              <input type="checkbox" id="deco-page-labels" checked />
+            </div>
+            <div class="param-row">
+              <label data-hint="Small + symbol where four pages meet, for precise alignment">Registration marks</label>
+              <input type="checkbox" id="deco-registration-marks" checked />
+            </div>
+            <div class="param-row">
+              <label data-hint="Footer text showing the final printed size and scale">Scale indicator</label>
+              <input type="checkbox" id="deco-scale-indicator" checked />
+            </div>
+            <div class="param-row">
+              <label data-hint="Thin grey rectangle around each tile's printable area">Border box</label>
+              <input type="checkbox" id="deco-border-box" checked />
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="print-summary" id="print-summary"></div>
+          </section>
+
+          <section class="section actions">
+            <button class="btn btn-primary" id="btn-print-pdf" style="width:100%">Generate PDF</button>
+          </section>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ═══════════════════ CENTER: PREVIEW ═══════════════════ -->
+    <section class="panel panel-preview">
+      <div class="preview-tabs" role="tablist">
+        <button class="tab-btn active" role="tab" data-tab="original">Original</button>
+        <button class="tab-btn" role="tab" data-tab="vectorized">Vectorized</button>
+        <button class="tab-btn" role="tab" data-tab="split">Side by Side</button>
+        <button class="tab-btn" role="tab" data-tab="print">Print</button>
+      </div>
+
+      <div class="preview-area" id="preview-area">
+        <div class="preview-placeholder" id="preview-placeholder">
+          <p>Upload an image or PDF to get started</p>
+        </div>
+
+        <div class="preview-pane" id="pane-original">
+          <div class="pan-container" id="pan-original">
+            <img id="original-img" alt="Original" draggable="false" />
+          </div>
+        </div>
+
+        <div class="preview-pane" id="pane-vectorized">
+          <div class="tracing-overlay" id="tracing-overlay" style="display:none">
+            <div class="spinner"></div>
+            <span>Tracing&hellip;</span>
+          </div>
+          <div class="pan-container" id="pan-vectorized" tabindex="0">
+            <div id="svg-container"></div>
+          </div>
+        </div>
+
+        <div class="preview-pane split-pane" id="pane-split">
+          <div class="split-half">
+            <span class="split-label">Original</span>
+            <img id="split-original" alt="Original" draggable="false" />
+          </div>
+          <div class="split-divider"></div>
+          <div class="split-half">
+            <span class="split-label">Vectorized</span>
+            <div id="split-svg"></div>
+          </div>
+        </div>
+
+        <!-- Dedicated Print tab pane: WYSIWYG poster + image + grid. -->
+        <div class="preview-pane" id="pane-print">
+          <div class="print-tab-placeholder" id="print-tab-placeholder">
+            <p>Vectorize an image first, then design your poster here.</p>
+          </div>
+          <div class="pan-container" id="pan-print" tabindex="0">
+            <svg id="poster-canvas" class="poster-canvas"
+                 xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+              <rect id="poster-bg" fill="white" />
+              <g id="poster-grid"></g>
+              <g id="poster-image"></g>
+              <g id="poster-handles"></g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-bar" id="status-bar">
+        <span id="status-dimensions">&mdash;</span>
+        <span id="status-size">&mdash;</span>
+        <span id="status-time">&mdash;</span>
+        <span id="status-paths">&mdash;</span>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ RIGHT: PALETTE (vectorize only) ═══════════════════ -->
+    <aside class="panel panel-palette" id="panel-palette" data-tab-context="vectorize">
+      <div class="palette-header">
+        <span class="section-title" style="margin:0">Color Palette</span>
+        <div class="palette-actions">
+          <button class="btn btn-ghost btn-sm" id="btn-reset-palette" disabled>Reset</button>
+          <button class="btn btn-ghost btn-sm" id="btn-bake-palette" disabled>Bake &amp; Download</button>
+        </div>
+      </div>
+      <div id="palette-placeholder" class="palette-placeholder">
+        <p>Palette appears after tracing</p>
+      </div>
+      <div id="palette-grid" class="palette-grid"></div>
+    </aside>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

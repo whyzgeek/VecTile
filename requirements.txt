@@ -1,0 +1,11 @@
+# NOTE: pyproject.toml is the source of truth for dependencies.
+# This file is kept in sync for users on the manual pip install path.
+fastapi
+uvicorn[standard]
+python-multipart
+vtracer
+Pillow
+numpy
+pypdfium2
+reportlab
+svglib
