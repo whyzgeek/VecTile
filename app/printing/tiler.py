@@ -83,6 +83,9 @@ def compute_grid(
     single_page: bool = False,
     grid_offset_x_mm: float = 0.0,
     grid_offset_y_mm: float = 0.0,
+    poster_mode: str = "dimensions",
+    grid_cols: int | None = None,
+    grid_rows: int | None = None,
 ) -> TileGrid:
     """Compute the tile grid for the requested poster.
 
@@ -126,8 +129,15 @@ def compute_grid(
         if step_x <= 0 or step_y <= 0:
             raise ValueError("Overlap too large relative to paper size")
 
-        cols = max(1, ceil((poster_w_mm - eff_overlap) / step_x))
-        rows = max(1, ceil((poster_h_mm - eff_overlap) / step_y))
+        if poster_mode == "grid" and grid_cols is not None and grid_rows is not None:
+            # Tile grid mode: the user's cols x rows is authoritative.
+            cols = max(1, int(grid_cols))
+            rows = max(1, int(grid_rows))
+            poster_w_mm = step_x * cols + eff_overlap
+            poster_h_mm = step_y * rows + eff_overlap
+        else:
+            cols = max(1, ceil((poster_w_mm - eff_overlap) / step_x))
+            rows = max(1, ceil((poster_h_mm - eff_overlap) / step_y))
 
     # Uniform scale: poster area / svg viewBox area, preserving aspect.
     # If poster aspect != svg aspect, we use the *minimum* scale so the whole
@@ -186,3 +196,16 @@ def col_label(col: int) -> str:
 def page_label(tile: TileRect) -> str:
     """Human-readable label like 'A1', 'B3', 'AA12' (col letter + row number)."""
     return f"{col_label(tile.col)}{tile.row + 1}"
+
+
+def poster_intersection_mm(
+    tile: TileRect, poster_w: float, poster_h: float,
+) -> tuple[float, float, float, float] | None:
+    """Return (x, y, w, h) where a tile overlaps the poster, or None."""
+    x1 = max(0.0, tile.poster_x_mm)
+    y1 = max(0.0, tile.poster_y_mm)
+    x2 = min(poster_w, tile.poster_x_mm + tile.printable_w_mm)
+    y2 = min(poster_h, tile.poster_y_mm + tile.printable_h_mm)
+    if x2 <= x1 + 1e-6 or y2 <= y1 + 1e-6:
+        return None
+    return (x1, y1, x2 - x1, y2 - y1)

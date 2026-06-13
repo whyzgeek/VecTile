@@ -30,16 +30,16 @@ const state = {
   activeTab: "original",  // original | vectorized | split | print
   printGridVisible: true, // toggled by the "Hide grid" button in the Print panel
   printSettings: {
-    units: "mm",          // "mm" | "in" — display unit, internal state stays mm
+    units: "in",          // "mm" | "in" — display unit, internal state stays mm
     aspectLocked: true,   // when true, poster_w_mm and poster_h_mm stay in source-SVG aspect
     posterAutoFit: true,  // when true, poster dims are auto-fitted on each fresh render
-    paper_name: "A4",
+    paper_name: "Letter",
     paper_w_mm: null,
     paper_h_mm: null,
     orientation: "portrait",
     poster_w_mm: 420,
     poster_h_mm: 594,
-    overlap_mm: 10,
+    overlap_mm: 2,
     margin_mm: 10,
     single_page: false,
     poster_mode: "grid", // UI-only: grid | dimensions | scale
@@ -55,6 +55,7 @@ const state = {
     image_rotation_deg: 0,        // rotation around the image's bbox centre
     grid_offset_x_mm: 0,          // shifts where the tile grid starts on the poster
     grid_offset_y_mm: 0,
+    trim_guides_to_poster: true,  // hide tile guides outside the poster bounds
     decorations: {
       overlap_shade: true,
       crop_marks: true,
@@ -420,9 +421,63 @@ async function runVectorize() {
 }
 
 // ── SVG rendering ─────────────────────────────────────────────
+function mediaIntrinsicSize(el) {
+  if (!el) return null;
+  if (el.tagName === "IMG") {
+    if (!el.naturalWidth) return null;
+    return { w: el.naturalWidth, h: el.naturalHeight };
+  }
+  const vb = el.getAttribute("viewBox");
+  if (vb) {
+    const p = vb.trim().split(/[\s,]+/).map(Number);
+    if (p.length >= 4 && p[2] > 0 && p[3] > 0) return { w: p[2], h: p[3] };
+  }
+  const w = parseFloat(el.getAttribute("width"));
+  const h = parseFloat(el.getAttribute("height"));
+  if (w > 0 && h > 0) return { w, h };
+  return null;
+}
+
+function fitMediaInZone(el, zone) {
+  if (!el || !zone) return;
+  const zw = zone.clientWidth;
+  const zh = zone.clientHeight;
+  // Pane may be hidden (display:none) — skip rather than sizing to 0×0.
+  if (zw <= 0 || zh <= 0) return;
+  const size = mediaIntrinsicSize(el);
+  if (!size) return;
+  const fit = Math.min(zw / size.w, zh / size.h);
+  if (!Number.isFinite(fit) || fit <= 0) return;
+  el.style.width = `${size.w * fit}px`;
+  el.style.height = `${size.h * fit}px`;
+  el.style.maxWidth = "none";
+  el.style.maxHeight = "none";
+}
+
+function fitSplitMediaToHalves() {
+  fitMediaInZone(
+    document.getElementById("split-original"),
+    document.querySelector("#split-half-left .split-pan-zone"),
+  );
+  // SVG viewBox units are not pixels — explicit sizing overshoots and clips.
+  const wrap = document.getElementById("split-svg");
+  const svg = wrap?.querySelector("svg");
+  if (svg) {
+    svg.style.removeProperty("width");
+    svg.style.removeProperty("height");
+    svg.style.removeProperty("max-width");
+    svg.style.removeProperty("max-height");
+  }
+  if (wrap) {
+    wrap.style.removeProperty("width");
+    wrap.style.removeProperty("height");
+  }
+}
+
 function renderSvg(svgStr) {
   svgContainer.innerHTML = svgStr;
   splitSvgDiv.innerHTML = svgStr;
+  fitSplitMediaToHalves();
   // The zoom-pan zones are bound at startup with content getters, so the new
   // SVG element is picked up automatically. Re-apply the current transform
   // so the new content matches the user's existing zoom/pan position.
@@ -591,6 +646,13 @@ function showPane(tab) {
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
+  if (tab === "split") {
+    // Refit after the pane becomes visible — earlier calls saw 0×0 layout.
+    requestAnimationFrame(() => {
+      fitSplitMediaToHalves();
+      reapplyAllZoomPan();
+    });
+  }
 }
 
 // ── Zoom / Pan ────────────────────────────────────────────────
@@ -662,6 +724,72 @@ function resetAllZoomPan() {
   zoomPanZones.forEach(z => z.reset());
 }
 
+function setupSplitZoomPan(container) {
+  if (!container) return;
+
+  let scale = 1, tx = 0, ty = 0;
+  let dragging = false, startX = 0, startY = 0;
+
+  function targets() {
+    return [
+      document.getElementById("split-original"),
+      document.getElementById("split-svg"),
+    ].filter(Boolean);
+  }
+
+  function applyTransform() {
+    const t = `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`;
+    targets().forEach(el => {
+      el.style.transformOrigin = "center center";
+      el.style.transform = t;
+    });
+  }
+
+  function reset() {
+    scale = 1; tx = 0; ty = 0;
+    applyTransform();
+  }
+
+  container.addEventListener("wheel", e => {
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const mx = e.clientX - (rect.left + rect.width / 2);
+    const my = e.clientY - (rect.top + rect.height / 2);
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.min(Math.max(scale * factor, 0.1), 20);
+    tx = mx - (mx - tx) * (newScale / scale);
+    ty = my - (my - ty) * (newScale / scale);
+    scale = newScale;
+    applyTransform();
+  }, { passive: false });
+
+  container.addEventListener("mousedown", e => {
+    if (e.target.classList.contains("split-label")) return;
+    dragging = true;
+    startX = e.clientX - tx;
+    startY = e.clientY - ty;
+    container.style.cursor = "grabbing";
+    e.preventDefault();
+  });
+
+  window.addEventListener("mousemove", e => {
+    if (!dragging) return;
+    tx = e.clientX - startX;
+    ty = e.clientY - startY;
+    applyTransform();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    container.style.cursor = "";
+  });
+
+  container.addEventListener("dblclick", reset);
+
+  zoomPanZones.push({ applyTransform, reset });
+}
+
 function initZoomPan() {
   // Original tab — the <img> element is fixed; only its src changes
   setupZoomPan(
@@ -684,17 +812,22 @@ function initZoomPan() {
     () => [document.getElementById("poster-canvas")]
   );
 
-  // Side-by-Side tab — both halves share one zoom state for synced compare
-  setupZoomPan(
-    document.getElementById("pane-split"),
-    () => [
-      document.getElementById("split-original"),
-      document.querySelector("#split-svg svg"),
-    ]
-  );
+  // Side-by-Side — synced pan/zoom on each image; divider stays fixed in the centre.
+  setupSplitZoomPan(document.getElementById("pane-split"));
 }
 
 initZoomPan();
+
+splitOrigImg.addEventListener("load", () => {
+  fitSplitMediaToHalves();
+  reapplyAllZoomPan();
+});
+window.addEventListener("resize", () => {
+  if (getCurrentTab() === "split") {
+    fitSplitMediaToHalves();
+    reapplyAllZoomPan();
+  }
+});
 
 // ── Download ──────────────────────────────────────────────────
 btnDownload.addEventListener("click", () => downloadSvg(false));
@@ -868,6 +1001,7 @@ const PRINT = {
   scaleSlider:       document.getElementById("print-scale"),
   scaleVal:          document.getElementById("print-scale-val"),
   overlapSection:    document.getElementById("print-overlap-section"),
+  decorationsSection: document.getElementById("print-decorations-section"),
   overlapSlider:     document.getElementById("print-overlap"),
   overlapVal:        document.getElementById("print-overlap-val"),
   modeTabs:          document.getElementById("print-mode-tabs"),
@@ -969,7 +1103,10 @@ PRINT.modeTabs.querySelectorAll("button").forEach(btn => {
     PRINT.modeTabs.querySelectorAll("button").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     state.printSettings.single_page = btn.dataset.printMode === "single";
-    PRINT.overlapSection.style.display = state.printSettings.single_page ? "none" : "";
+    const tiled = !state.printSettings.single_page;
+    PRINT.overlapSection.style.display = tiled ? "" : "none";
+    if (PRINT.decorationsSection) PRINT.decorationsSection.style.display = tiled ? "" : "none";
+    renderPosterGrid();
     schedulePrintCalc();
   });
 });
@@ -1185,7 +1322,6 @@ PRINT.scaleSlider.addEventListener("change", () => {
 // ── Decoration toggles ───────────────────────────────────────
 const decoMap = {
   "deco-overlap-shade":      "overlap_shade",
-  "deco-crop-marks":         "crop_marks",
   "deco-page-labels":        "page_labels",
   "deco-registration-marks": "registration_marks",
   "deco-scale-indicator":    "scale_indicator",
@@ -1195,8 +1331,23 @@ Object.entries(decoMap).forEach(([id, key]) => {
   const el = document.getElementById(id);
   el.addEventListener("change", () => {
     state.printSettings.decorations[key] = el.checked;
+    renderPosterGrid();
   });
 });
+
+function effectiveOverlapMm(settings) {
+  const paper = paperWHForCurrentSettings();
+  if (!paper) return settings.overlap_mm;
+  const printableW = paper.w - 2 * settings.margin_mm;
+  const printableH = paper.h - 2 * settings.margin_mm;
+  return Math.max(0, Math.min(settings.overlap_mm, Math.min(printableW, printableH) - 1));
+}
+
+function posterDimensionsForPlacement() {
+  const g = state.printGrid;
+  if (g) return { w: g.poster_w_mm, h: g.poster_h_mm };
+  return effectivePosterDimensions();
+}
 
 // ── Compute poster dimensions from the chosen UI mode ────────
 function effectivePosterDimensions() {
@@ -1233,12 +1384,13 @@ function effectivePosterDimensions() {
     if (!paper) return { w: settings.poster_w_mm, h: settings.poster_h_mm };
     const printableW = paper.w - 2 * settings.margin_mm;
     const printableH = paper.h - 2 * settings.margin_mm;
-    const stepX = printableW - settings.overlap_mm;
-    const stepY = printableH - settings.overlap_mm;
+    const overlap = effectiveOverlapMm(settings);
+    const stepX = printableW - overlap;
+    const stepY = printableH - overlap;
     const cols = settings.grid_cols;
     const rows = settings.grid_rows;
-    const w = stepX * cols + settings.overlap_mm;
-    const h = stepY * rows + settings.overlap_mm;
+    const w = stepX * cols + overlap;
+    const h = stepY * rows + overlap;
     return { w, h };
   }
 
@@ -1284,6 +1436,10 @@ function buildPrintSettingsPayload() {
     image_rotation_deg: s.image_rotation_deg,
     grid_offset_x_mm: s.grid_offset_x_mm,
     grid_offset_y_mm: s.grid_offset_y_mm,
+    trim_guides_to_poster: s.trim_guides_to_poster,
+    poster_mode: s.poster_mode,
+    grid_cols: s.poster_mode === "grid" ? s.grid_cols : null,
+    grid_rows: s.poster_mode === "grid" ? s.grid_rows : null,
     decorations: { ...s.decorations },
   };
 }
@@ -1315,6 +1471,10 @@ async function runPrintCalc() {
     }
     const data = await res.json();
     state.printGrid = data;
+    // Keep placement poster dims in sync with the server grid so image scale/position
+    // matches the tile layout (critical for seamless overlap at seams).
+    state.printSettings.poster_w_mm = data.poster_w_mm;
+    state.printSettings.poster_h_mm = data.poster_h_mm;
     // Derive placement when we don't have one yet, or when fit isn't manual
     // (so the image follows poster-size and paper-orientation changes).
     if (state.printSettings.image_scale == null
@@ -1344,16 +1504,16 @@ function renderPrintSummary(grid) {
 function computeFitPlacement(fitMode) {
   // Returns {x_mm, y_mm, scale} for "contain" or "cover" given current poster + source.
   const src = getSourceSvgDims();
-  const s = state.printSettings;
   if (!src) return null;
-  const sx = s.poster_w_mm / src.w;
-  const sy = s.poster_h_mm / src.h;
+  const { w: posterW, h: posterH } = posterDimensionsForPlacement();
+  const sx = posterW / src.w;
+  const sy = posterH / src.h;
   const scale = (fitMode === "cover") ? Math.max(sx, sy) : Math.min(sx, sy);
   const w_mm = src.w * scale;
   const h_mm = src.h * scale;
   return {
-    x_mm: (s.poster_w_mm - w_mm) / 2,
-    y_mm: (s.poster_h_mm - h_mm) / 2,
+    x_mm: (posterW - w_mm) / 2,
+    y_mm: (posterH - h_mm) / 2,
     scale,
   };
 }
@@ -1431,12 +1591,128 @@ function renderPosterCanvas() {
   reapplyAllZoomPan();
 }
 
+function overlapStripsForTile(t, grid) {
+  const o = grid.overlap_mm;
+  if (o <= 0) return [];
+  const strips = [];
+  if (t.col < grid.cols - 1) {
+    strips.push({
+      edge: "right",
+      x: t.poster_x_mm + t.printable_w_mm - o,
+      y: t.poster_y_mm,
+      w: o,
+      h: t.printable_h_mm,
+    });
+  }
+  if (t.col > 0) {
+    strips.push({ edge: "left", x: t.poster_x_mm, y: t.poster_y_mm, w: o, h: t.printable_h_mm });
+  }
+  if (t.row > 0) {
+    strips.push({ edge: "top", x: t.poster_x_mm, y: t.poster_y_mm, w: t.printable_w_mm, h: o });
+  }
+  if (t.row < grid.rows - 1) {
+    strips.push({
+      edge: "bottom",
+      x: t.poster_x_mm,
+      y: t.poster_y_mm + t.printable_h_mm - o,
+      w: t.printable_w_mm,
+      h: o,
+    });
+  }
+  return strips;
+}
+
+const LABEL_STRIP_PRIORITY = ["bottom", "right", "left", "top"];
+
+function pickLabelStrip(strips) {
+  for (const edge of LABEL_STRIP_PRIORITY) {
+    const found = strips.find(s => s.edge === edge);
+    if (found) return found;
+  }
+  return null;
+}
+
+function appendAssemblyGuides(parent, t, grid) {
+  const mkLine = (x1, y1, x2, y2, cls) => {
+    // White halo underneath so the guide stays visible on dark images.
+    const halo = document.createElementNS(SVG_NS, "line");
+    halo.setAttribute("class", "tile-guide-halo");
+    halo.setAttribute("x1", x1);
+    halo.setAttribute("y1", y1);
+    halo.setAttribute("x2", x2);
+    halo.setAttribute("y2", y2);
+    parent.appendChild(halo);
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("class", cls);
+    line.setAttribute("x1", x1);
+    line.setAttribute("y1", y1);
+    line.setAttribute("x2", x2);
+    line.setAttribute("y2", y2);
+    parent.appendChild(line);
+  };
+  const fs = Math.max(2.5, Math.min(grid.overlap_mm * 0.8, 5));
+  const mkText = (cx, cy, text, vertical) => {
+    const el = document.createElementNS(SVG_NS, "text");
+    el.setAttribute("class", "tile-guide-text");
+    if (vertical) el.setAttribute("transform", `rotate(90 ${cx} ${cy})`);
+    el.setAttribute("x", cx);
+    el.setAttribute("y", cy);
+    el.setAttribute("text-anchor", "middle");
+    el.setAttribute("dominant-baseline", "middle");
+    el.setAttribute("font-size", fs);
+    el.textContent = text;
+    parent.appendChild(el);
+  };
+  const o = grid.overlap_mm;
+  const x = t.poster_x_mm;
+  const y = t.poster_y_mm;
+  const w = t.printable_w_mm;
+  const h = t.printable_h_mm;
+  // Covering edges (this page is laid on top): cut the white margin off here.
+  if (t.col > 0) {
+    mkLine(x, y, x, y + h, "tile-cut-line");
+    mkText(x + fs, y + h / 2, "CUT", true);
+  }
+  if (t.row > 0) {
+    mkLine(x, y, x + w, y, "tile-cut-line");
+    mkText(x + w / 2, y + fs, "CUT", false);
+  }
+  // Covered edges (the neighbour glues on top of this strip).
+  if (t.col < grid.cols - 1) {
+    mkLine(x + w - o, y, x + w - o, y + h, "tile-glue-line");
+    mkText(x + w - fs, y + h / 2, "GLUE", true);
+  }
+  if (t.row < grid.rows - 1) {
+    mkLine(x, y + h - o, x + w, y + h - o, "tile-glue-line");
+    mkText(x + w / 2, y + h - fs, "GLUE", false);
+  }
+}
+
+function appendOverlapLabel(parent, strip, text, fontSize) {
+  const cx = strip.x + strip.w / 2;
+  const cy = strip.y + strip.h / 2;
+  const label = document.createElementNS(SVG_NS, "text");
+  label.setAttribute("class", "tile-label");
+  if (strip.edge === "left" || strip.edge === "right") {
+    label.setAttribute("transform", `rotate(90 ${cx} ${cy})`);
+  }
+  label.setAttribute("x", cx);
+  label.setAttribute("y", cy);
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("dominant-baseline", "middle");
+  label.setAttribute("font-size", fontSize);
+  label.textContent = text;
+  parent.appendChild(label);
+}
+
 function renderPosterGrid() {
   const grid = state.printGrid;
+  const s = state.printSettings;
   if (!grid) return;
   PRINT.posterGrid.innerHTML = "";
 
-  // Full-poster transparent rect under the grid so empty white area is a drag target
+  if (s.single_page || grid.overlap_mm <= 0) return;
+
   const dragZone = document.createElementNS(SVG_NS, "rect");
   dragZone.setAttribute("class", "grid-drag-zone");
   dragZone.setAttribute("x", "0");
@@ -1445,44 +1721,37 @@ function renderPosterGrid() {
   dragZone.setAttribute("height", grid.poster_h_mm);
   PRINT.posterGrid.appendChild(dragZone);
 
-  const labelFontSize = Math.max(4, Math.min(grid.printable_w_mm, grid.printable_h_mm) * 0.04);
-  const dimFontSize = labelFontSize * 0.7;
-  const u = unitSuffix();
+  const labelFontSize = Math.max(3, Math.min(grid.overlap_mm * 0.35, 6));
+
   grid.tiles.forEach(t => {
-    // Subtle alternating shade so each tile is visually distinct
-    const shade = document.createElementNS(SVG_NS, "rect");
-    shade.setAttribute("class", ((t.col + t.row) % 2 === 0) ? "tile-shade-even" : "tile-shade-odd");
-    shade.setAttribute("x", t.poster_x_mm);
-    shade.setAttribute("y", t.poster_y_mm);
-    shade.setAttribute("width", t.printable_w_mm);
-    shade.setAttribute("height", t.printable_h_mm);
-    PRINT.posterGrid.appendChild(shade);
+    const strips = overlapStripsForTile(t, grid);
+    if (!strips.length) return;
 
-    const rect = document.createElementNS(SVG_NS, "rect");
-    rect.setAttribute("class", "tile-rect");
-    rect.setAttribute("x", t.poster_x_mm);
-    rect.setAttribute("y", t.poster_y_mm);
-    rect.setAttribute("width", t.printable_w_mm);
-    rect.setAttribute("height", t.printable_h_mm);
-    PRINT.posterGrid.appendChild(rect);
+    if (s.decorations.overlap_shade) {
+      strips.forEach(st => {
+        const shade = document.createElementNS(SVG_NS, "rect");
+        shade.setAttribute("class", ((t.col + t.row) % 2 === 0) ? "tile-shade-even" : "tile-shade-odd");
+        shade.setAttribute("x", st.x);
+        shade.setAttribute("y", st.y);
+        shade.setAttribute("width", st.w);
+        shade.setAttribute("height", st.h);
+        PRINT.posterGrid.appendChild(shade);
+      });
+    }
 
-    // Page label (top-left of tile, larger)
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("class", "tile-label");
-    label.setAttribute("x", t.poster_x_mm + labelFontSize * 0.7);
-    label.setAttribute("y", t.poster_y_mm + labelFontSize * 1.4);
-    label.setAttribute("font-size", labelFontSize);
-    label.textContent = t.label;
-    PRINT.posterGrid.appendChild(label);
+    if (s.decorations.border_box) {
+      appendAssemblyGuides(PRINT.posterGrid, t, grid);
+    }
 
-    // Tile dimensions (just below the page label, smaller, in current units)
-    const dim = document.createElementNS(SVG_NS, "text");
-    dim.setAttribute("class", "tile-dim");
-    dim.setAttribute("x", t.poster_x_mm + labelFontSize * 0.7);
-    dim.setAttribute("y", t.poster_y_mm + labelFontSize * 1.4 + dimFontSize * 1.4);
-    dim.setAttribute("font-size", dimFontSize);
-    dim.textContent = `${fmtLen(t.printable_w_mm)} \u00d7 ${fmtLen(t.printable_h_mm)} ${u}`;
-    PRINT.posterGrid.appendChild(dim);
+    if (s.decorations.page_labels) {
+      const lbl = document.createElementNS(SVG_NS, "text");
+      lbl.setAttribute("class", "tile-label");
+      lbl.setAttribute("x", t.poster_x_mm + labelFontSize * 0.6);
+      lbl.setAttribute("y", t.poster_y_mm + labelFontSize * 1.2);
+      lbl.setAttribute("font-size", labelFontSize);
+      lbl.textContent = t.label;
+      PRINT.posterGrid.appendChild(lbl);
+    }
   });
 }
 

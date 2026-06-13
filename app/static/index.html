@@ -113,8 +113,8 @@
             <div class="control-row">
               <label>Units</label>
               <div class="engine-tabs" id="print-units-tabs">
-                <button class="engine-tab active" data-print-units="mm">mm</button>
-                <button class="engine-tab" data-print-units="in">inches</button>
+                <button class="engine-tab" data-print-units="mm">mm</button>
+                <button class="engine-tab active" data-print-units="in">inches</button>
               </div>
             </div>
           </section>
@@ -219,40 +219,38 @@
           </section>
 
           <section class="section" id="print-overlap-section">
-            <h3 class="section-title">Tile overlap</h3>
+            <h3 class="section-title">Image overlap (slack)</h3>
+            <p class="hint-text">Small duplicated-image slack for nudging seams together. The glue strip absorbs the white margin, so this is just the extra image overlap. 0 works for edge-to-edge printers.</p>
             <div class="control-row">
               <label for="print-overlap">Overlap <span data-unit-label>(mm)</span></label>
               <div class="slider-group">
-                <input type="range" id="print-overlap" min="0" max="50" step="1" value="10" />
-                <output id="print-overlap-val">10</output>
+                <input type="range" id="print-overlap" min="0" max="50" step="1" value="2" />
+                <output id="print-overlap-val">2</output>
               </div>
             </div>
           </section>
 
-          <section class="section">
+          <section class="section" id="print-decorations-section">
             <h3 class="section-title">Decorations</h3>
+            <p class="hint-text">Cut the covering edges (left/top) and lay each page over the neighbour's glue strip (right/bottom). Guides and labels sit in margins that get cut or hidden, so they vanish in the finished poster.</p>
             <div class="param-row">
-              <label data-hint="Faint shading on the strips that overlap with neighbours">Overlap shade</label>
+              <label data-hint="Faint shading on overlap bands in the preview">Overlap shade</label>
               <input type="checkbox" id="deco-overlap-shade" checked />
             </div>
             <div class="param-row">
-              <label data-hint="L-shaped corner ticks just outside the trim line">Crop marks</label>
-              <input type="checkbox" id="deco-crop-marks" checked />
-            </div>
-            <div class="param-row">
-              <label data-hint="A1, A2... grid coordinates printed on each tile">Page labels</label>
+              <label data-hint="Page ID in the top margin of each tile">Page labels</label>
               <input type="checkbox" id="deco-page-labels" checked />
             </div>
             <div class="param-row">
-              <label data-hint="Small + symbol where four pages meet, for precise alignment">Registration marks</label>
+              <label data-hint="Alignment + on the covered side, hidden after gluing">Registration marks</label>
               <input type="checkbox" id="deco-registration-marks" checked />
             </div>
             <div class="param-row">
-              <label data-hint="Footer text showing the final printed size and scale">Scale indicator</label>
+              <label data-hint="Final poster size in the bottom-right tile margin">Scale indicator</label>
               <input type="checkbox" id="deco-scale-indicator" checked />
             </div>
             <div class="param-row">
-              <label data-hint="Thin grey rectangle around each tile's printable area">Border box</label>
+              <label data-hint="CUT HERE / GLUE HERE lines and labels for assembly">Cut / glue guides</label>
               <input type="checkbox" id="deco-border-box" checked />
             </div>
           </section>
@@ -299,15 +297,19 @@
         </div>
 
         <div class="preview-pane split-pane" id="pane-split">
-          <div class="split-half">
-            <span class="split-label">Original</span>
-            <img id="split-original" alt="Original" draggable="false" />
+          <div class="split-half" id="split-half-left">
+            <div class="split-pan-zone">
+              <img id="split-original" alt="Original" draggable="false" />
+            </div>
           </div>
-          <div class="split-divider"></div>
-          <div class="split-half">
-            <span class="split-label">Vectorized</span>
-            <div id="split-svg"></div>
+          <div class="split-half" id="split-half-right">
+            <div class="split-pan-zone">
+              <div id="split-svg"></div>
+            </div>
           </div>
+          <div class="split-divider" aria-hidden="true"></div>
+          <span class="split-label split-label-left">Original</span>
+          <span class="split-label split-label-right">Vectorized</span>
         </div>
 
         <!-- Dedicated Print tab pane: WYSIWYG poster + image + grid. -->
@@ -319,8 +321,8 @@
             <svg id="poster-canvas" class="poster-canvas"
                  xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
               <rect id="poster-bg" fill="white" />
-              <g id="poster-grid"></g>
               <g id="poster-image"></g>
+              <g id="poster-grid"></g>
               <g id="poster-handles"></g>
             </svg>
           </div>

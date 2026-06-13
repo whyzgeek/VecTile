@@ -35,7 +35,7 @@ from .printing import (
     get_paper_size,
 )
 from .printing.pdf_generator import compute_settings_grid
-from .printing.tiler import page_label as tile_page_label
+from .printing.tiler import page_label as tile_page_label, poster_intersection_mm
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
@@ -270,13 +270,13 @@ async def vectorize(req: VectorizeRequest):
 
 class PrintSettingsRequest(BaseModel):
     """Mirror of printing.PrintSettings, used for the calculate + tile endpoints."""
-    paper_name: str = "A4"
+    paper_name: str = "Letter"
     paper_w_mm: float | None = None
     paper_h_mm: float | None = None
     orientation: str = "portrait"
     poster_w_mm: float = 420.0
     poster_h_mm: float = 594.0
-    overlap_mm: float = 10.0
+    overlap_mm: float = 2.0
     margin_mm: float = 10.0
     single_page: bool = False
     image_x_mm: float | None = None
@@ -285,6 +285,10 @@ class PrintSettingsRequest(BaseModel):
     image_rotation_deg: float = 0.0
     grid_offset_x_mm: float = 0.0
     grid_offset_y_mm: float = 0.0
+    poster_mode: str = "dimensions"
+    grid_cols: int | None = None
+    grid_rows: int | None = None
+    trim_guides_to_poster: bool = True
     decorations: dict[str, bool] = Field(default_factory=lambda: {
         "overlap_shade": True,
         "crop_marks": True,
@@ -311,6 +315,10 @@ class PrintSettingsRequest(BaseModel):
             image_rotation_deg=self.image_rotation_deg,
             grid_offset_x_mm=self.grid_offset_x_mm,
             grid_offset_y_mm=self.grid_offset_y_mm,
+            poster_mode=self.poster_mode,
+            grid_cols=self.grid_cols,
+            grid_rows=self.grid_rows,
+            trim_guides_to_poster=self.trim_guides_to_poster,
             decorations=dict(self.decorations),
         )
 
@@ -358,23 +366,27 @@ async def calculate_print(req: CalculatePrintRequest):
     except (ValueError, KeyError) as e:
         raise HTTPException(400, str(e))
 
-    tiles = [
-        {
-            "col": t.col,
-            "row": t.row,
-            "page_index": t.page_index,
-            "label": tile_page_label(t),
-            "poster_x_mm": t.poster_x_mm,
-            "poster_y_mm": t.poster_y_mm,
-            "printable_w_mm": t.printable_w_mm,
-            "printable_h_mm": t.printable_h_mm,
-        }
-        for t in grid.tiles
-    ]
+    tiles = []
+    for t in grid.tiles:
+        if req.settings.trim_guides_to_poster:
+            if poster_intersection_mm(t, grid.poster_w_mm, grid.poster_h_mm) is None:
+                continue
+        tiles.append(
+            {
+                "col": t.col,
+                "row": t.row,
+                "page_index": t.page_index,
+                "label": tile_page_label(t),
+                "poster_x_mm": t.poster_x_mm,
+                "poster_y_mm": t.poster_y_mm,
+                "printable_w_mm": t.printable_w_mm,
+                "printable_h_mm": t.printable_h_mm,
+            }
+        )
     return {
         "cols": grid.cols,
         "rows": grid.rows,
-        "total_pages": grid.total_pages,
+        "total_pages": len(tiles),
         "paper_w_mm": grid.paper_w_mm,
         "paper_h_mm": grid.paper_h_mm,
         "poster_w_mm": grid.poster_w_mm,

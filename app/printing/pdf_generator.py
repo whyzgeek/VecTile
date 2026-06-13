@@ -29,25 +29,19 @@ from svglib.svglib import svg2rlg
 from . import decorations as deco
 from .decorations import MM_TO_PT, Layout, make_layout
 from .paper_sizes import get_paper_size
-from .tiler import TileGrid, compute_grid
-
-# Print bleed in mm — image content extends this far past the printable area
-# on every side so a slightly imprecise cut still has image right up to the
-# edge instead of a white halo. The user trims along the crop marks (which
-# remain at the printable-area corners) and any small inaccuracy is forgiven.
-BLEED_MM = 3.0
+from .tiler import TileGrid, compute_grid, poster_intersection_mm
 
 
 @dataclass
 class PrintSettings:
     """All knobs the UI exposes for the Print tab."""
-    paper_name: str = "A4"               # one of PAPER_SIZES, or "Custom"
+    paper_name: str = "Letter"           # one of PAPER_SIZES, or "Custom"
     paper_w_mm: Optional[float] = None    # used when paper_name == "Custom"
     paper_h_mm: Optional[float] = None
     orientation: str = "portrait"         # "portrait" | "landscape"
     poster_w_mm: float = 420.0            # final printed dimensions
     poster_h_mm: float = 594.0
-    overlap_mm: float = 10.0
+    overlap_mm: float = 2.0               # image overlap / slack (glue strip absorbs the margin)
     margin_mm: float = 10.0
     single_page: bool = False             # if True, ignore tile grid and use one page
 
@@ -65,6 +59,10 @@ class PrintSettings:
     # shifts the grid right, positive y shifts down.
     grid_offset_x_mm: float = 0.0
     grid_offset_y_mm: float = 0.0
+    poster_mode: str = "dimensions"  # "grid" | "dimensions" | "scale"
+    grid_cols: int | None = None
+    grid_rows: int | None = None
+    trim_guides_to_poster: bool = True  # hide guides on the poster's outer edge
 
     decorations: dict = field(default_factory=lambda: {
         "overlap_shade": True,
@@ -101,6 +99,9 @@ def compute_settings_grid(svg_view_w: float, svg_view_h: float,
         single_page=settings.single_page,
         grid_offset_x_mm=settings.grid_offset_x_mm,
         grid_offset_y_mm=settings.grid_offset_y_mm,
+        poster_mode=settings.poster_mode,
+        grid_cols=settings.grid_cols,
+        grid_rows=settings.grid_rows,
     )
 
 
@@ -157,18 +158,26 @@ def _draw_tile(canvas: Canvas, drawing, grid: TileGrid, tile, settings: PrintSet
     # of a clean printed surface for gluing.
 
     # ---- 2. Clipped, scaled, translated, rotated SVG content ---------------
-    # Clip to the printable area PLUS a small bleed on every side, but never
-    # past the physical paper bounds. Image content can flow into the safe
-    # margin slightly so cuts on the trim line don't show white halos.
     canvas.saveState()
-    bleed_pt = BLEED_MM * MM_TO_PT
-    clip_left   = max(0.0, layout.x_left - bleed_pt)
-    clip_bottom = max(0.0, layout.y_bottom - bleed_pt)
-    clip_right  = min(layout.page_w_pt, layout.x_right + bleed_pt)
-    clip_top    = min(layout.page_h_pt, layout.y_top + bleed_pt)
+
+    inter = None
+    if settings.trim_guides_to_poster:
+        inter = poster_intersection_mm(tile, grid.poster_w_mm, grid.poster_h_mm)
+        if inter is None:
+            canvas.restoreState()
+            return
+
     clip = canvas.beginPath()
-    clip.rect(clip_left, clip_bottom, clip_right - clip_left, clip_top - clip_bottom)
+    clip.rect(layout.x_left, layout.y_bottom,
+              layout.printable_w_pt, layout.printable_h_pt)
     canvas.clipPath(clip, stroke=0, fill=0)
+
+    if inter is not None:
+        ix, iy, iw, ih = inter
+        bx, by, bw, bh = deco.intersection_on_page_pt(layout, tile, ix, iy, iw, ih)
+        poster_clip = canvas.beginPath()
+        poster_clip.rect(bx, by, bw, bh)
+        canvas.clipPath(poster_clip, stroke=0, fill=0)
 
     rot = float(getattr(settings, "image_rotation_deg", 0.0) or 0.0)
     if rot != 0.0:
@@ -186,17 +195,19 @@ def _draw_tile(canvas: Canvas, drawing, grid: TileGrid, tile, settings: PrintSet
 
     canvas.restoreState()
 
-    # ---- 3. Decorations over the art ---------------------------------------
+    # ---- 3. Decorations — overlap bands only (hidden after trim/tape) --------
+    if settings.single_page or grid.overlap_mm <= 0:
+        return
+
     if settings.decorations.get("border_box", True):
-        deco.draw_border_box(canvas, layout)
+        deco.draw_cut_lines(canvas, layout, tile, grid)
+        deco.draw_glue_lines(canvas, layout, tile, grid)
     if settings.decorations.get("registration_marks", True):
-        deco.draw_registration_marks(canvas, layout, tile, grid)
-    if settings.decorations.get("crop_marks", True):
-        deco.draw_crop_marks(canvas, layout)
+        deco.draw_overlap_registration_marks(canvas, layout, tile, grid)
     if settings.decorations.get("page_labels", True):
-        deco.draw_page_label(canvas, layout, tile, grid)
+        deco.draw_page_label_in_overlap(canvas, layout, tile, grid)
     if settings.decorations.get("scale_indicator", True):
-        deco.draw_scale_indicator(canvas, layout, grid)
+        deco.draw_overlap_scale_indicator(canvas, layout, tile, grid)
 
 
 def build_pdf(svg_str: str, settings: PrintSettings) -> bytes:
@@ -215,6 +226,9 @@ def build_pdf(svg_str: str, settings: PrintSettings) -> bytes:
     canvas.setTitle("Vectile Poster")
 
     for tile in grid.tiles:
+        if settings.trim_guides_to_poster:
+            if poster_intersection_mm(tile, grid.poster_w_mm, grid.poster_h_mm) is None:
+                continue
         canvas.setPageSize(page_size_pt)
         _draw_tile(canvas, drawing, grid, tile, settings)
         canvas.showPage()
