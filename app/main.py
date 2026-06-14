@@ -24,7 +24,14 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from .engines import ENGINES
-from .preprocess import extract_palette, extract_palette_from_svg, quantize, resize_for_preview
+from .preprocess import (
+    extract_palette,
+    extract_palette_from_svg,
+    is_svg_bytes,
+    parse_svg_user_units,
+    quantize,
+    resize_for_preview,
+)
 from .pdf_input import is_pdf, get_page_count, render_page
 from . import session as sess
 from .printing import (
@@ -41,7 +48,7 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
 ALLOWED_MIME = {
     "image/png", "image/jpeg", "image/bmp", "image/webp",
-    "image/gif", "image/tiff", "application/pdf",
+    "image/gif", "image/tiff", "image/svg+xml", "application/pdf",
 }
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -153,12 +160,46 @@ async def upload(file: UploadFile = File(...)):
 
     content_type = (file.content_type or "").lower().split(";")[0].strip()
 
-    # Sniff PDF by magic bytes regardless of MIME
+    # Sniff PDF / SVG by magic bytes regardless of MIME
     if is_pdf(data):
         content_type = "application/pdf"
+    elif is_svg_bytes(data):
+        content_type = "image/svg+xml"
 
     if content_type not in ALLOWED_MIME:
         raise HTTPException(415, f"Unsupported file type: {content_type}")
+
+    if content_type == "image/svg+xml":
+        try:
+            svg_str = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(400, "SVG must be UTF-8 encoded")
+        try:
+            view_w, view_h = parse_svg_user_units(svg_str)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        palette = extract_palette_from_svg(svg_str)
+        # Minimal raster placeholder so the session shape stays compatible.
+        pil_img = Image.new("RGB", (max(1, int(view_w)), max(1, int(view_h))), "white")
+        w, h = pil_img.size
+        raster_path = sess.save_raster_to_temp(pil_img)
+        entry = sess.create_entry(
+            original_bytes=data,
+            raster_path=raster_path,
+            kind="svg",
+            page_count=1,
+            width=int(view_w),
+            height=int(view_h),
+        )
+        return {
+            "image_id": entry.image_id,
+            "kind": "svg",
+            "width": int(view_w),
+            "height": int(view_h),
+            "page_count": 1,
+            "palette": palette,
+            "svg": svg_str,
+        }
 
     if content_type == "application/pdf":
         page_count = get_page_count(data)

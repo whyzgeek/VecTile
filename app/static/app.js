@@ -181,19 +181,25 @@ async function handleFile(file) {
 
   // For raster uploads we can use the original file for the "Original" preview;
   // for PDFs the file isn't a viewable image, so we re-fetch a rendered raster.
-  if (data.kind === "image") {
+  if (data.kind === "svg" && data.svg) {
+    state.currentSvg = data.svg;
+    renderSvg(data.svg);
+    buildPalettePanel(data.palette);
+    btnDownload.disabled = false;
+    originalImg.removeAttribute("src");
+    splitOrigImg.removeAttribute("src");
+  } else if (data.kind === "image") {
     const objectUrl = URL.createObjectURL(file);
     originalImg.src = objectUrl;
     splitOrigImg.src = objectUrl;
   } else {
     // PDF: server-rendered raster will be loaded after the first vectorize call.
-    // For now show the file name placeholder — UI will switch to the trace view.
     originalImg.removeAttribute("src");
     splitOrigImg.removeAttribute("src");
   }
 
-  uploadInfo.textContent = `${file.name} — ${data.width}×${data.height}`;
-  statusDim.textContent = `${data.width} × ${data.height} px`;
+  uploadInfo.textContent = `${file.name} — ${data.width}×${data.height}${data.kind === "svg" ? " (SVG)" : ""}`;
+  statusDim.textContent = `${data.width} × ${data.height}${data.kind === "svg" ? " user units" : " px"}`;
 
   // Show/hide PDF controls
   if (data.kind === "pdf") {
@@ -209,7 +215,12 @@ async function handleFile(file) {
   previewArea.classList.add("has-image");
   resetAllZoomPan();
   showPane(getCurrentTab() || "original");
-  scheduleVectorize();
+  if (data.kind !== "svg") {
+    scheduleVectorize();
+  } else {
+    refreshPrintEnabled();
+    showPane("vectorized");
+  }
 }
 
 // ── PDF controls ──────────────────────────────────────────────
@@ -1042,18 +1053,63 @@ function fmtLen(mm, mmDecimals = 0, inDecimals = 2) {
 function unitSuffix() { return state.printSettings.units; }
 
 // ── Source SVG dimensions (from viewBox / width attrs) ───────
+function parseSvgLength(val) {
+  if (val == null || val === "") return NaN;
+  const m = String(val).trim().match(/^([+-]?[\d.]+)\s*(mm|cm|in|pt|px|pc|%)?$/i);
+  if (!m) return parseFloat(val);
+  const n = parseFloat(m[1]);
+  const unit = (m[2] || "px").toLowerCase();
+  switch (unit) {
+    case "mm": return n;
+    case "cm": return n * 10;
+    case "in": return n * 25.4;
+    case "pt": return n * 25.4 / 72;
+    case "pc": return n * 25.4 / 6;
+    case "px": return n;
+    case "%": return NaN;
+    default: return n;
+  }
+}
+
 function getSourceSvgDims() {
   const svg = svgContainer.querySelector("svg");
   if (!svg) return null;
   const vb = svg.getAttribute("viewBox");
   if (vb) {
-    const parts = vb.split(/\s+|,/).map(Number);
-    if (parts.length === 4) return { w: parts[2], h: parts[3] };
+    const parts = vb.trim().split(/[\s,]+/).map(Number);
+    if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+      return { w: parts[2], h: parts[3] };
+    }
   }
-  const w = parseFloat(svg.getAttribute("width"));
-  const h = parseFloat(svg.getAttribute("height"));
-  if (w && h) return { w, h };
+  const w = parseSvgLength(svg.getAttribute("width"));
+  const h = parseSvgLength(svg.getAttribute("height"));
+  if (w > 0 && h > 0) return { w, h };
   return null;
+}
+
+function cloneSvgForPoster(traced) {
+  const src = getSourceSvgDims();
+  if (!src) return null;
+
+  const nested = document.createElementNS(SVG_NS, "svg");
+  const vb = traced.getAttribute("viewBox");
+  nested.setAttribute("viewBox", vb || `0 0 ${src.w} ${src.h}`);
+  nested.setAttribute("width", String(src.w));
+  nested.setAttribute("height", String(src.h));
+  nested.setAttribute("overflow", "visible");
+  nested.setAttribute("preserveAspectRatio", "none");
+
+  for (const attr of traced.getAttributeNames()) {
+    if (attr === "width" || attr === "height" || attr === "viewBox") continue;
+    if (attr.startsWith("xmlns") || attr.startsWith("xml:")) {
+      nested.setAttribute(attr, traced.getAttribute(attr));
+    }
+  }
+
+  Array.from(traced.childNodes).forEach(node => {
+    nested.appendChild(node.cloneNode(true));
+  });
+  return nested;
 }
 
 let printDebounceTimer = null;
@@ -1361,8 +1417,8 @@ function effectivePosterDimensions() {
   if (!svg) return { w: settings.poster_w_mm, h: settings.poster_h_mm };
 
   const vb = svg.getAttribute("viewBox");
-  let viewW = parseFloat(svg.getAttribute("width")) || 1000;
-  let viewH = parseFloat(svg.getAttribute("height")) || 1000;
+  let viewW = parseSvgLength(svg.getAttribute("width")) || 1000;
+  let viewH = parseSvgLength(svg.getAttribute("height")) || 1000;
   if (vb) {
     const parts = vb.split(/\s+|,/).map(Number);
     if (parts.length === 4) {
@@ -1452,10 +1508,15 @@ function schedulePrintCalc() {
 
 async function runPrintCalc() {
   if (!state.currentSvg || !state.imageId) return;
+  const src = getSourceSvgDims();
   const body = {
     settings: buildPrintSettingsPayload(),
     image_id: state.imageId,
   };
+  if (src) {
+    body.svg_view_w = src.w;
+    body.svg_view_h = src.h;
+  }
   try {
     const res = await fetch("/api/print/calculate", {
       method: "POST",
@@ -1581,11 +1642,10 @@ function renderPosterCanvas() {
   // the image group is rendered AFTER the grid in the DOM).
   renderPosterGrid();
 
-  // Image placement
+  // Image placement — embed as nested SVG so Inkscape defs/use/styles stay intact.
   PRINT.posterImage.innerHTML = "";
-  Array.from(traced.children).forEach(child => {
-    PRINT.posterImage.appendChild(child.cloneNode(true));
-  });
+  const nested = cloneSvgForPoster(traced);
+  if (nested) PRINT.posterImage.appendChild(nested);
   applyImageTransform();
 
   reapplyAllZoomPan();
@@ -1951,7 +2011,6 @@ function renderRotateHandle() {
   }, { passive: false });
 })();
 
-// ── Generate PDF ──────────────────────────────────────────────
 PRINT.btnPdf.addEventListener("click", async () => {
   const svg = svgContainer.querySelector("svg");
   if (!svg) return;

@@ -135,13 +135,42 @@ def _strip_text_position(strip: OverlapStrip, role: str) -> tuple[float, float]:
     return cx, cy
 
 
-def _tile_shows_scale(tile: TileRect, grid: TileGrid) -> bool:
-    """Show the poster-size note once, on the bottom-right tile.
+def _draw_text_in_assembly_margin(
+    canvas: Canvas, layout: Layout, edge: str, text: str,
+    *, font: str = "Helvetica-Bold", size: float = 6.5,
+    along: float = 0.16,
+) -> None:
+    """Draw text in a cut or glue margin, offset along the edge from CUT/GLUE."""
+    m = layout.margin_pt
+    if m < _MIN_LABEL_MARGIN_PT:
+        return
+    canvas.saveState()
+    canvas.setFillColor(_GREY)
+    canvas.setFont(font, size)
+    if edge == "left":
+        y = layout.y_bottom + layout.printable_h_pt * along
+        canvas.translate(layout.x_left - m / 2, y)
+        canvas.rotate(90)
+        canvas.drawCentredString(0, -2.0, text)
+    elif edge == "right":
+        y = layout.y_bottom + layout.printable_h_pt * along
+        canvas.translate(layout.x_right + m / 2, y)
+        canvas.rotate(90)
+        canvas.drawCentredString(0, -2.0, text)
+    elif edge == "top":
+        x = layout.x_left + layout.printable_w_pt * along
+        canvas.drawCentredString(x, layout.y_top + m / 2 - 2.3, text)
+    else:  # bottom
+        x = layout.x_left + layout.printable_w_pt * along
+        canvas.drawCentredString(x, layout.y_bottom - m / 2 - 2.3, text)
+    canvas.restoreState()
 
-    That tile has no right/bottom neighbour, so its bottom margin carries no
-    "GLUE HERE" label and the size text can sit there collision-free.
-    """
-    return tile.col == grid.cols - 1 and tile.row == grid.rows - 1
+
+def _tile_shows_scale(tile: TileRect, grid: TileGrid) -> bool:
+    """Show the poster-size note once on the start tile's glue/cut margin."""
+    if grid.total_pages <= 1:
+        return False
+    return tile.col == 0 and tile.row == 0
 
 
 def _draw_edge_text(canvas: Canvas, text: str, edge: str, layout: Layout,
@@ -275,48 +304,23 @@ def _label_edge(tile: TileRect, grid: TileGrid) -> str | None:
 
 def draw_page_label_in_overlap(canvas: Canvas, layout: Layout,
                                  tile: TileRect, grid: TileGrid) -> None:
-    """Page label tucked into a cut or glue margin so it never reaches the
-    final poster.
-
-    A cut margin (left/top) is trimmed off during assembly; a glue margin
-    (right/bottom) is hidden under the neighbour glued on top. The label sits
-    near one end of the edge so it stays clear of the centred CUT/GLUE label.
-    """
-    m = layout.margin_pt
-    if m < _MIN_LABEL_MARGIN_PT:
-        return
+    """Page label in a cut or glue margin — trimmed or hidden after assembly."""
     edge = _label_edge(tile, grid)
     if edge is None:
         return
     text = f"{page_label(tile)} ({tile.page_index + 1}/{grid.total_pages})"
-    canvas.saveState()
-    canvas.setFillColor(_GREY)
-    canvas.setFont("Helvetica-Bold", 6.5)
-    if edge == "left":
-        canvas.translate(layout.x_left - m / 2,
-                         layout.y_bottom + layout.printable_h_pt * 0.16)
-        canvas.rotate(90)
-        canvas.drawCentredString(0, -2.0, text)
-    elif edge == "right":
-        canvas.translate(layout.x_right + m / 2,
-                         layout.y_bottom + layout.printable_h_pt * 0.16)
-        canvas.rotate(90)
-        canvas.drawCentredString(0, -2.0, text)
-    elif edge == "top":
-        cx = layout.x_left + layout.printable_w_pt * 0.16
-        canvas.drawCentredString(cx, layout.y_top + m / 2 - 2.3, text)
-    else:  # bottom
-        cx = layout.x_left + layout.printable_w_pt * 0.16
-        canvas.drawCentredString(cx, layout.y_bottom - m / 2 - 2.3, text)
-    canvas.restoreState()
+    _draw_text_in_assembly_margin(
+        canvas, layout, edge, text, font="Helvetica-Bold", size=6.5, along=0.16,
+    )
 
 
 def draw_overlap_scale_indicator(canvas: Canvas, layout: Layout,
                                  tile: TileRect, grid: TileGrid) -> None:
-    """Poster dimensions centred in the bottom margin of the bottom-right tile."""
+    """Final poster size in a cut/glue margin on the start tile (once)."""
     if not _tile_shows_scale(tile, grid):
         return
-    if layout.margin_pt < _MIN_LABEL_MARGIN_PT:
+    edge = _label_edge(tile, grid)
+    if edge is None:
         return
     poster_w_in = grid.poster_w_mm / 25.4
     poster_h_in = grid.poster_h_mm / 25.4
@@ -324,12 +328,9 @@ def draw_overlap_scale_indicator(canvas: Canvas, layout: Layout,
         f"{poster_w_in:.1f}\u00d7{poster_h_in:.1f} in "
         f"({grid.poster_w_mm:.0f}\u00d7{grid.poster_h_mm:.0f} mm)"
     )
-    cx = (layout.x_left + layout.x_right) / 2
-    canvas.saveState()
-    canvas.setFillColor(_GREY)
-    canvas.setFont("Helvetica", 5)
-    canvas.drawCentredString(cx, layout.y_bottom - layout.margin_pt / 2 - 1.8, text)
-    canvas.restoreState()
+    _draw_text_in_assembly_margin(
+        canvas, layout, edge, text, font="Helvetica", size=5, along=0.84,
+    )
 
 
 def draw_registration_marks(canvas: Canvas, layout: Layout,
