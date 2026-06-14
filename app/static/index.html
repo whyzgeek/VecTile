@@ -293,6 +293,7 @@
           </div>
           <div class="pan-container" id="pan-vectorized" tabindex="0">
             <div id="svg-container"></div>
+            <div id="edit-box-overlay" class="edit-box-overlay hidden" aria-hidden="true"></div>
           </div>
         </div>
 
@@ -337,19 +338,69 @@
       </div>
     </section>
 
-    <!-- ═══════════════════ RIGHT: PALETTE (vectorize only) ═══════════════════ -->
+    <!-- ═══════════════════ RIGHT: QUICK EDIT + PALETTE (vectorize only) ═══════ -->
     <aside class="panel panel-palette" id="panel-palette" data-tab-context="vectorize">
-      <div class="palette-header">
-        <span class="section-title" style="margin:0">Color Palette</span>
-        <div class="palette-actions">
-          <button class="btn btn-ghost btn-sm" id="btn-reset-palette" disabled>Reset</button>
-          <button class="btn btn-ghost btn-sm" id="btn-bake-palette" disabled>Bake &amp; Download</button>
-        </div>
+      <div class="panel-palette-scroll">
+        <section class="quick-edit-section" id="quick-edit-section">
+          <div class="palette-header">
+            <span class="section-title" style="margin:0">Quick Edit</span>
+            <div class="palette-actions">
+              <button class="btn btn-ghost btn-sm" id="btn-edit-undo" disabled title="Undo">Undo</button>
+              <button class="btn btn-ghost btn-sm" id="btn-edit-redo" disabled title="Redo">Redo</button>
+            </div>
+          </div>
+          <p class="hint-text quick-edit-hint">Edit on the Vectorized tab canvas.</p>
+          <div class="edit-tool-grid" id="edit-tool-grid" role="group" aria-label="Edit tools">
+            <button type="button" class="edit-tool-btn active" data-edit-tool="pan" title="Pan and zoom">Pan</button>
+            <button type="button" class="edit-tool-btn" data-edit-tool="clickErase" title="Click a shape to remove it">Click erase</button>
+            <button type="button" class="edit-tool-btn" data-edit-tool="boxErase" title="Drag a box to remove shapes">Box erase</button>
+          </div>
+          <div class="edit-paint-panel" id="edit-paint-panel">
+            <div class="paint-picker-col">
+              <div id="edit-paint-swatch" class="edit-paint-swatch" title="Current paint color"></div>
+              <input type="text" id="edit-paint-hex" class="edit-paint-hex" value="#000000" maxlength="7" spellcheck="false" disabled aria-label="Paint color hex" />
+              <div class="edit-paint-sl" id="edit-paint-sl" role="slider" aria-label="Saturation and lightness">
+                <div class="edit-paint-sl-cursor" id="edit-paint-sl-cursor"></div>
+              </div>
+              <input type="range" id="edit-paint-hue" class="edit-paint-hue" min="0" max="360" value="0" disabled aria-label="Hue" />
+              <div class="edit-paint-recent" id="edit-paint-recent" aria-label="Recent paint colors"></div>
+            </div>
+            <div class="edit-paint-tools" role="group" aria-label="Paint tools">
+              <button type="button" class="edit-tool-btn" data-edit-tool="eyedropper" title="Click a shape to pick its color">Pick color</button>
+              <button type="button" class="edit-tool-btn" data-edit-tool="clickPaint" title="Click a shape to paint it">Click paint</button>
+              <button type="button" class="edit-tool-btn" data-edit-tool="boxPaint" title="Drag a box to paint shapes">Box paint</button>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="edit-bg-color">Background</label>
+            <div class="edit-bg-row">
+              <input type="color" id="edit-bg-color" value="#ffffff" disabled />
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-apply-bg" disabled>Apply</button>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="edit-speckle">Remove speckles</label>
+            <div class="slider-group">
+              <input type="range" id="edit-speckle" min="1" max="20" step="1" value="4" disabled />
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-remove-speckles" disabled>Clean</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="palette-section">
+          <div class="palette-header">
+            <span class="section-title" style="margin:0">Color Palette</span>
+            <div class="palette-actions">
+              <button class="btn btn-ghost btn-sm" id="btn-reset-palette" disabled>Reset</button>
+            </div>
+          </div>
+          <p class="hint-text">Click swatch to hide. Use &#9679; to set paint color.</p>
+          <div id="palette-placeholder" class="palette-placeholder">
+            <p>Palette appears after tracing</p>
+          </div>
+          <div id="palette-grid" class="palette-grid"></div>
+        </section>
       </div>
-      <div id="palette-placeholder" class="palette-placeholder">
-        <p>Palette appears after tracing</p>
-      </div>
-      <div id="palette-grid" class="palette-grid"></div>
     </aside>
   </main>
 

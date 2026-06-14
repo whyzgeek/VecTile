@@ -22,6 +22,13 @@ const state = {
   presets: [],
   hiddenColors: new Set(),
   recoloredColors: {},  // originalHex -> newHex
+  editTools: { mode: "pan", paintColor: "#000000" },
+  paintRecentColors: [],
+  paintPickerHsl: { h: 0, s: 0, l: 0 },
+  backgroundColor: "#ffffff",
+  undoStack: [],
+  redoStack: [],
+  originalTraceSvg: null,
   originalFile: null,
   // Print state
   paperSizes: [],
@@ -103,7 +110,42 @@ const statusPaths    = document.getElementById("status-paths");
 const paletteGrid    = document.getElementById("palette-grid");
 const palettePlaceholder = document.getElementById("palette-placeholder");
 const btnResetPalette = document.getElementById("btn-reset-palette");
-const btnBakePalette  = document.getElementById("btn-bake-palette");
+const panVectorized   = document.getElementById("pan-vectorized");
+const editBoxOverlay  = document.getElementById("edit-box-overlay");
+const quickEditSection = document.getElementById("quick-edit-section");
+const editPaintSwatch  = document.getElementById("edit-paint-swatch");
+const editPaintHex     = document.getElementById("edit-paint-hex");
+const editPaintSl      = document.getElementById("edit-paint-sl");
+const editPaintSlCursor = document.getElementById("edit-paint-sl-cursor");
+const editPaintHue     = document.getElementById("edit-paint-hue");
+const editPaintRecent  = document.getElementById("edit-paint-recent");
+const editBgColor      = document.getElementById("edit-bg-color");
+const btnApplyBg      = document.getElementById("btn-apply-bg");
+const editSpeckle     = document.getElementById("edit-speckle");
+const btnRemoveSpeckles = document.getElementById("btn-remove-speckles");
+const btnEditUndo     = document.getElementById("btn-edit-undo");
+const btnEditRedo     = document.getElementById("btn-edit-redo");
+
+const EDIT_DRAWABLE = "path, polygon, rect, circle, ellipse, line, polyline";
+const VECTILE_BG_ID = "vectile-bg";
+const MAX_UNDO = 30;
+const MAX_PAINT_RECENT = 8;
+let bgColorInputLocked = false;
+
+const paintColorPicker = {
+  swatch: () => editPaintSwatch,
+  hex: () => editPaintHex,
+  sl: () => editPaintSl,
+  slCursor: () => editPaintSlCursor,
+  hue: () => editPaintHue,
+  recent: () => editPaintRecent,
+  getColor: () => state.editTools.paintColor,
+  setColor: (c) => { state.editTools.paintColor = c; },
+  getHsl: () => state.paintPickerHsl,
+  setHsl: (h) => { state.paintPickerHsl = h; },
+  getRecent: () => state.paintRecentColors,
+  setRecent: (r) => { state.paintRecentColors = r; },
+};
 
 // ── Bootstrap ─────────────────────────────────────────────────
 (async () => {
@@ -175,6 +217,9 @@ async function handleFile(file) {
   state.currentDpi = 200;
   state.hiddenColors.clear();
   state.recoloredColors = {};
+  resetEditHistory();
+  state.originalTraceSvg = null;
+  state.backgroundColor = "#ffffff";
   // Each new upload re-enables poster auto-fit so the print panel starts in the
   // right orientation for this image. User edits later will disable it again.
   state.printSettings.posterAutoFit = true;
@@ -183,6 +228,9 @@ async function handleFile(file) {
   // for PDFs the file isn't a viewable image, so we re-fetch a rendered raster.
   if (data.kind === "svg" && data.svg) {
     state.currentSvg = data.svg;
+    state.originalTraceSvg = data.svg;
+    resetEditHistory();
+    state.backgroundColor = "#ffffff";
     renderSvg(data.svg);
     buildPalettePanel(data.palette);
     btnDownload.disabled = false;
@@ -417,8 +465,11 @@ async function runVectorize() {
 
     const data = await res.json();
     state.currentSvg = data.svg;
+    state.originalTraceSvg = data.svg;
     state.hiddenColors.clear();
     state.recoloredColors = {};
+    resetEditHistory();
+    state.backgroundColor = "#ffffff";
 
     renderSvg(data.svg);
     buildPalettePanel(data.palette);
@@ -494,30 +545,675 @@ function renderSvg(svgStr) {
   // so the new content matches the user's existing zoom/pan position.
   reapplyAllZoomPan();
   showPane(getCurrentTab());
+  syncBackgroundFromSvg();
   if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
+}
+
+// ── SVG Quick Edit ────────────────────────────────────────────
+function getPrimarySvg() {
+  return svgContainer.querySelector("svg");
+}
+
+function serializeWorkingSvg() {
+  const svg = getPrimarySvg();
+  return svg ? new XMLSerializer().serializeToString(svg) : state.currentSvg;
+}
+
+function syncSvgViewsFromPrimary() {
+  const svg = getPrimarySvg();
+  if (!svg) return;
+  splitSvgDiv.innerHTML = svgContainer.innerHTML;
+  fitSplitMediaToHalves();
+  reapplyAllZoomPan();
+}
+
+// ── Paint color picker (HSL + hex + recent + eyedropper) ─────
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function rgbToHex(r, g, b) {
+  return `#${[r, g, b].map(v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToRgb(hex) {
+  const m = hex.replace("#", "").match(/^([0-9a-f]{6})$/i);
+  if (!m) return null;
+  const n = m[1];
+  return {
+    r: parseInt(n.slice(0, 2), 16),
+    g: parseInt(n.slice(2, 4), 16),
+    b: parseInt(n.slice(4, 6), 16),
+  };
+}
+
+function normalizeColorToHex(color) {
+  if (!color || color === "none" || color === "transparent") return null;
+  const c = color.trim();
+  if (c.startsWith("#")) {
+    let h = c.slice(1);
+    if (h.length === 8) h = h.slice(0, 6);
+    if (h.length === 3) h = h.split("").map(ch => ch + ch).join("");
+    if (/^[0-9a-f]{6}$/i.test(h)) return `#${h.toLowerCase()}`;
+    return null;
+  }
+  const rgb = c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*[\d.]+)?\s*\)$/i);
+  if (rgb) return rgbToHex(+rgb[1], +rgb[2], +rgb[3]);
+  return null;
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)); break;
+      case g: h = ((b - r) / d + 2); break;
+      default: h = ((r - g) / d + 4); break;
+    }
+    h /= 6;
+  }
+  return { h: h * 360, s: s * 100, l: l * 100 };
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = clamp(s, 0, 100) / 100;
+  l = clamp(l, 0, 100) / 100;
+  if (s === 0) {
+    const v = l * 255;
+    return { r: v, g: v, b: v };
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hk = h / 360;
+  const tc = t => {
+    let x = t;
+    if (x < 0) x += 1;
+    if (x > 1) x -= 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  return {
+    r: tc(hk + 1 / 3) * 255,
+    g: tc(hk) * 255,
+    b: tc(hk - 1 / 3) * 255,
+  };
+}
+
+function hslToHex(h, s, l) {
+  const { r, g, b } = hslToRgb(h, s, l);
+  return rgbToHex(r, g, b);
+}
+
+function getElementFillColor(el) {
+  let node = el;
+  while (node && node.nodeType === 1) {
+    const attrFill = node.getAttribute?.("fill");
+    if (attrFill && attrFill !== "none") {
+      const hex = normalizeColorToHex(attrFill);
+      if (hex) return hex;
+    }
+    if (node.style?.fill) {
+      const hex = normalizeColorToHex(node.style.fill);
+      if (hex) return hex;
+    }
+    if (node.tagName?.toLowerCase() === "svg") break;
+    node = node.parentElement;
+  }
+  try {
+    return normalizeColorToHex(getComputedStyle(el).fill);
+  } catch {
+    return null;
+  }
+}
+
+function updatePickerVisuals(picker) {
+  const { h, s, l } = picker.getHsl();
+  const sl = picker.sl();
+  const slCursor = picker.slCursor();
+  const hue = picker.hue();
+  if (sl) sl.style.background = `hsl(${h}, 100%, 50%)`;
+  if (slCursor && sl) {
+    const w = sl.clientWidth || 1;
+    const hgt = sl.clientHeight || 1;
+    slCursor.style.left = `${(s / 100) * w}px`;
+    slCursor.style.top = `${(1 - l / 100) * hgt}px`;
+  }
+  if (hue) hue.value = String(Math.round(h));
+}
+
+function renderPickerRecent(picker) {
+  const recentEl = picker.recent?.();
+  if (!recentEl) return;
+  recentEl.innerHTML = "";
+  picker.getRecent().forEach(color => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "edit-paint-recent-chip";
+    btn.style.background = color;
+    btn.title = color;
+    btn.disabled = !getPrimarySvg() && !state.currentSvg;
+    btn.addEventListener("click", () => {
+      setPickerColor(picker, color, { addRecent: false });
+    });
+    recentEl.appendChild(btn);
+  });
+}
+
+function setPickerColor(picker, hex, { addRecent = true } = {}) {
+  const normalized = normalizeColorToHex(hex);
+  if (!normalized) return;
+  const rgb = hexToRgb(normalized);
+  if (!rgb) return;
+  picker.setColor(normalized);
+  picker.setHsl(rgbToHsl(rgb.r, rgb.g, rgb.b));
+  const swatch = picker.swatch();
+  const hexInput = picker.hex();
+  if (swatch) swatch.style.background = normalized;
+  if (hexInput) hexInput.value = normalized;
+  updatePickerVisuals(picker);
+  if (addRecent && picker.recent?.()) {
+    picker.setRecent([
+      normalized,
+      ...picker.getRecent().filter(c => c !== normalized),
+    ].slice(0, MAX_PAINT_RECENT));
+    renderPickerRecent(paintColorPicker);
+  }
+}
+
+function setPickerColorFromHsl(picker, h, s, l, opts = {}) {
+  setPickerColor(picker, hslToHex(h, s, l), opts);
+}
+
+function setPickerEnabled(picker, enabled) {
+  const hex = picker.hex();
+  const hue = picker.hue();
+  if (hex) hex.disabled = !enabled;
+  if (hue) hue.disabled = !enabled;
+  const sl = picker.sl();
+  if (sl) sl.classList.toggle("disabled", !enabled);
+  picker.recent?.()?.querySelectorAll("button").forEach(btn => { btn.disabled = !enabled; });
+}
+
+function setPaintColor(hex, opts) {
+  setPickerColor(paintColorPicker, hex, opts);
+}
+
+function setBackgroundInputColor(hex) {
+  const normalized = normalizeColorToHex(hex);
+  if (!normalized) return;
+  state.backgroundColor = normalized;
+  if (editBgColor) editBgColor.value = normalized;
+}
+
+function syncBackgroundFromSvg() {
+  if (bgColorInputLocked) return;
+  const bg = getPrimarySvg()?.querySelector(`#${VECTILE_BG_ID}`);
+  if (bg) {
+    const hex = getElementFillColor(bg);
+    if (hex) setBackgroundInputColor(hex);
+  } else if (editBgColor) {
+    editBgColor.value = state.backgroundColor;
+  }
+}
+
+function initPaintColorPicker() {
+  initColorPicker(paintColorPicker);
+  renderPickerRecent(paintColorPicker);
+
+  editBgColor?.addEventListener("focus", () => { bgColorInputLocked = true; });
+  editBgColor?.addEventListener("blur", () => { bgColorInputLocked = false; });
+  editBgColor?.addEventListener("input", e => {
+    const hex = normalizeColorToHex(e.target.value);
+    if (hex) state.backgroundColor = hex;
+  });
+  editBgColor?.addEventListener("change", e => {
+    const hex = normalizeColorToHex(e.target.value);
+    if (hex) state.backgroundColor = hex;
+  });
+}
+
+function initColorPicker(picker) {
+  const sl = picker.sl();
+  const hue = picker.hue();
+  if (!sl || !hue) return;
+
+  setPickerColor(picker, picker.getColor(), { addRecent: false });
+
+  hue.addEventListener("input", e => {
+    const h = parseFloat(e.target.value);
+    const hsl = picker.getHsl();
+    hsl.h = h;
+    picker.setHsl(hsl);
+    updatePickerVisuals(picker);
+    setPickerColorFromHsl(picker, h, hsl.s, hsl.l, { addRecent: false });
+  });
+
+  const pickSl = (clientX, clientY, addRecent = false) => {
+    const rect = sl.getBoundingClientRect();
+    const x = clamp(clientX - rect.left, 0, rect.width);
+    const y = clamp(clientY - rect.top, 0, rect.height);
+    const s = (x / rect.width) * 100;
+    const l = (1 - y / rect.height) * 100;
+    const hsl = picker.getHsl();
+    hsl.s = s;
+    hsl.l = l;
+    picker.setHsl(hsl);
+    updatePickerVisuals(picker);
+    setPickerColorFromHsl(picker, hsl.h, s, l, { addRecent });
+  };
+
+  let slDragging = false;
+  sl.addEventListener("pointerdown", e => {
+    if (sl.classList.contains("disabled")) return;
+    e.preventDefault();
+    slDragging = true;
+    sl.setPointerCapture(e.pointerId);
+    pickSl(e.clientX, e.clientY, false);
+  });
+  sl.addEventListener("pointermove", e => {
+    if (!slDragging) return;
+    pickSl(e.clientX, e.clientY, false);
+  });
+  sl.addEventListener("pointerup", e => {
+    if (slDragging) pickSl(e.clientX, e.clientY, true);
+    slDragging = false;
+    if (sl.hasPointerCapture(e.pointerId)) sl.releasePointerCapture(e.pointerId);
+  });
+  sl.addEventListener("pointercancel", () => { slDragging = false; });
+
+  picker.hex()?.addEventListener("change", e => {
+    let v = e.target.value.trim();
+    if (!v.startsWith("#")) v = `#${v}`;
+    const hex = normalizeColorToHex(v);
+    if (hex) {
+      setPickerColor(picker, hex);
+    } else if (picker.hex()) {
+      picker.hex().value = picker.getColor();
+    }
+  });
+  picker.hex()?.addEventListener("keydown", e => {
+    if (e.key === "Enter") picker.hex().blur();
+  });
+}
+
+function isEditToolActive() {
+  return state.editTools.mode !== "pan";
+}
+
+function isClickEditTool() {
+  return state.editTools.mode === "clickErase"
+    || state.editTools.mode === "clickPaint"
+    || state.editTools.mode === "eyedropper";
+}
+
+function isEyedropperTool() {
+  return state.editTools.mode === "eyedropper";
+}
+
+function isBoxEditTool() {
+  return state.editTools.mode === "boxErase" || state.editTools.mode === "boxPaint";
+}
+
+function isEraseTool() {
+  return state.editTools.mode === "clickErase" || state.editTools.mode === "boxErase";
+}
+
+function resetEditHistory() {
+  state.undoStack = [];
+  state.redoStack = [];
+  updateEditUndoButtons();
+}
+
+function updateEditUndoButtons() {
+  if (btnEditUndo) btnEditUndo.disabled = state.undoStack.length === 0;
+  if (btnEditRedo) btnEditRedo.disabled = state.redoStack.length === 0;
+}
+
+function queryEditToolButtons() {
+  return quickEditSection?.querySelectorAll(".edit-tool-btn") || [];
+}
+
+function setQuickEditEnabled(enabled) {
+  const ctrls = [editBgColor, btnApplyBg, editSpeckle, btnRemoveSpeckles];
+  ctrls.forEach(el => { if (el) el.disabled = !enabled; });
+  setPickerEnabled(paintColorPicker, enabled);
+  queryEditToolButtons().forEach(btn => {
+    btn.disabled = !enabled;
+  });
+  if (enabled) {
+    requestAnimationFrame(() => updatePickerVisuals(paintColorPicker));
+  }
+}
+
+function pushUndo() {
+  const snap = serializeWorkingSvg();
+  if (!snap) return;
+  state.undoStack.push(snap);
+  if (state.undoStack.length > MAX_UNDO) state.undoStack.shift();
+  state.redoStack = [];
+  updateEditUndoButtons();
+}
+
+function restoreSvgSnapshot(svgStr) {
+  renderSvg(svgStr);
+  state.hiddenColors.clear();
+  state.recoloredColors = {};
+  buildPalettePanel(extractPaletteFromCurrentSvg());
+  if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
+}
+
+function undoEdit() {
+  if (!state.undoStack.length) return;
+  const current = serializeWorkingSvg();
+  if (current) state.redoStack.push(current);
+  restoreSvgSnapshot(state.undoStack.pop());
+  updateEditUndoButtons();
+}
+
+function redoEdit() {
+  if (!state.redoStack.length) return;
+  const current = serializeWorkingSvg();
+  if (current) state.undoStack.push(current);
+  restoreSvgSnapshot(state.redoStack.pop());
+  updateEditUndoButtons();
+}
+
+function afterSvgEdit() {
+  syncSvgViewsFromPrimary();
+  const palette = extractPaletteFromCurrentSvg();
+  buildPalettePanel(palette);
+  updateStatusBarFromDom();
+  if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
+}
+
+function updateStatusBarFromDom() {
+  const svg = getPrimarySvg();
+  if (!svg) return;
+  const pathCount = svg.querySelectorAll("path").length;
+  statusPaths.textContent = `${pathCount} paths`;
+  const bytes = new Blob([serializeWorkingSvg()]).size;
+  statusSize.textContent = `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function resolveDrawable(el) {
+  if (!el) return null;
+  const found = el.closest?.(EDIT_DRAWABLE);
+  if (!found || found.id === VECTILE_BG_ID) return null;
+  return found;
+}
+
+function pathsInBox(svg, clientX1, clientY1, clientX2, clientY2) {
+  const minX = Math.min(clientX1, clientX2);
+  const maxX = Math.max(clientX1, clientX2);
+  const minY = Math.min(clientY1, clientY2);
+  const maxY = Math.max(clientY1, clientY2);
+  return [...svg.querySelectorAll(EDIT_DRAWABLE)].filter(el => {
+    if (el.id === VECTILE_BG_ID) return false;
+    const r = el.getBoundingClientRect();
+    return !(r.right < minX || r.left > maxX || r.bottom < minY || r.top > maxY);
+  });
+}
+
+function paintElement(el, color) {
+  el.setAttribute("fill", color);
+  el.style.fill = color;
+  const stroke = el.getAttribute("stroke");
+  if (stroke && stroke !== "none") {
+    el.setAttribute("stroke", color);
+    el.style.stroke = color;
+  }
+}
+
+function applyBackgroundColor(color) {
+  const fill = normalizeColorToHex(color) || color;
+  if (!fill) return;
+  const svg = getPrimarySvg();
+  if (!svg) return;
+  pushUndo();
+  let bg = svg.querySelector(`#${VECTILE_BG_ID}`);
+  const dims = getSourceSvgDims();
+  const w = dims?.w || 1000;
+  const h = dims?.h || 1000;
+  if (!bg) {
+    bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.id = VECTILE_BG_ID;
+    bg.setAttribute("x", "0");
+    bg.setAttribute("y", "0");
+    bg.setAttribute("width", String(w));
+    bg.setAttribute("height", String(h));
+    svg.insertBefore(bg, svg.firstChild);
+  }
+  bg.setAttribute("fill", fill);
+  setBackgroundInputColor(fill);
+  afterSvgEdit();
+}
+
+function removeSpeckles(thresholdPx) {
+  const svg = getPrimarySvg();
+  if (!svg) return;
+  const dims = getSourceSvgDims();
+  if (!dims) return;
+  const viewMax = Math.max(dims.w, dims.h);
+  const container = panVectorized || svgContainer;
+  const cw = container?.clientWidth || viewMax;
+  const scale = viewMax / Math.max(cw, 1);
+  const threshold = thresholdPx * scale;
+
+  pushUndo();
+  let removed = 0;
+  svg.querySelectorAll(EDIT_DRAWABLE).forEach(el => {
+    if (el.id === VECTILE_BG_ID) return;
+    try {
+      const bb = el.getBBox();
+      if (Math.max(bb.width, bb.height) < threshold) {
+        el.remove();
+        removed++;
+      }
+    } catch { /* skip */ }
+  });
+  if (removed === 0) {
+    state.undoStack.pop();
+    updateEditUndoButtons();
+    return;
+  }
+  afterSvgEdit();
+}
+
+function removeHoverHighlight() {
+  getPrimarySvg()?.querySelectorAll(".edit-hover-target").forEach(el => {
+    el.classList.remove("edit-hover-target");
+  });
+}
+
+function setEditToolMode(mode) {
+  state.editTools.mode = mode;
+  queryEditToolButtons().forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.editTool === mode);
+  });
+  if (panVectorized) {
+    panVectorized.classList.toggle("edit-mode-click", isClickEditTool() && !isEyedropperTool());
+    panVectorized.classList.toggle("edit-mode-eyedropper", isEyedropperTool());
+    panVectorized.classList.toggle("edit-mode-box", isBoxEditTool());
+  }
+  removeHoverHighlight();
+  hideBoxOverlay();
+}
+
+function hideBoxOverlay() {
+  if (!editBoxOverlay) return;
+  editBoxOverlay.classList.add("hidden");
+  editBoxOverlay.style.cssText = "";
+}
+
+function updateBoxOverlay(clientX1, clientY1, clientX2, clientY2) {
+  if (!editBoxOverlay || !panVectorized) return;
+  const rect = panVectorized.getBoundingClientRect();
+  const left = Math.min(clientX1, clientX2) - rect.left;
+  const top = Math.min(clientY1, clientY2) - rect.top;
+  const width = Math.abs(clientX2 - clientX1);
+  const height = Math.abs(clientY2 - clientY1);
+  editBoxOverlay.classList.remove("hidden", "erase", "paint");
+  editBoxOverlay.classList.add(isEraseTool() ? "erase" : "paint");
+  editBoxOverlay.style.left = `${left}px`;
+  editBoxOverlay.style.top = `${top}px`;
+  editBoxOverlay.style.width = `${width}px`;
+  editBoxOverlay.style.height = `${height}px`;
+}
+
+function performClickEdit(target) {
+  if (isEyedropperTool()) {
+    const el = resolveDrawable(target);
+    if (!el) return;
+    const color = getElementFillColor(el);
+    if (color) setPaintColor(color);
+    return;
+  }
+  const el = resolveDrawable(target);
+  if (!el) return;
+  pushUndo();
+  if (state.editTools.mode === "clickErase") {
+    el.remove();
+  } else {
+    paintElement(el, state.editTools.paintColor);
+  }
+  afterSvgEdit();
+}
+
+function performBoxEdit(clientX1, clientY1, clientX2, clientY2) {
+  const svg = getPrimarySvg();
+  if (!svg) return;
+  const targets = pathsInBox(svg, clientX1, clientY1, clientX2, clientY2);
+  if (!targets.length) return;
+  pushUndo();
+  if (isEraseTool()) {
+    targets.forEach(el => el.remove());
+  } else {
+    targets.forEach(el => paintElement(el, state.editTools.paintColor));
+  }
+  afterSvgEdit();
+}
+
+function initSvgEditTools() {
+  queryEditToolButtons().forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      setEditToolMode(btn.dataset.editTool);
+    });
+  });
+
+  btnApplyBg?.addEventListener("click", () => {
+    if (editBgColor) applyBackgroundColor(editBgColor.value);
+  });
+
+  btnRemoveSpeckles?.addEventListener("click", () => {
+    const threshold = parseInt(editSpeckle?.value || "4", 10);
+    removeSpeckles(threshold);
+  });
+
+  btnEditUndo?.addEventListener("click", undoEdit);
+  btnEditRedo?.addEventListener("click", redoEdit);
+
+  if (!panVectorized) return;
+
+  let boxDragging = false;
+  let boxStart = null;
+
+  panVectorized.addEventListener("pointerdown", e => {
+    if (!isEditToolActive() || !getPrimarySvg()) return;
+    if (e.button !== 0) return;
+
+    if (isClickEditTool()) {
+      e.stopPropagation();
+      e.preventDefault();
+      performClickEdit(e.target);
+      return;
+    }
+
+    if (isBoxEditTool()) {
+      e.stopPropagation();
+      e.preventDefault();
+      boxDragging = true;
+      boxStart = { x: e.clientX, y: e.clientY };
+      panVectorized.setPointerCapture(e.pointerId);
+      updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
+    }
+  });
+
+  panVectorized.addEventListener("pointermove", e => {
+    if (!boxDragging || !boxStart) return;
+    updateBoxOverlay(boxStart.x, boxStart.y, e.clientX, e.clientY);
+  });
+
+  panVectorized.addEventListener("pointerup", e => {
+    if (!boxDragging) return;
+    boxDragging = false;
+    hideBoxOverlay();
+    if (boxStart) {
+      if (Math.abs(e.clientX - boxStart.x) >= 4 || Math.abs(e.clientY - boxStart.y) >= 4) {
+        performBoxEdit(boxStart.x, boxStart.y, e.clientX, e.clientY);
+      }
+    }
+    boxStart = null;
+    if (panVectorized.hasPointerCapture(e.pointerId)) {
+      panVectorized.releasePointerCapture(e.pointerId);
+    }
+  });
+
+  panVectorized.addEventListener("pointercancel", e => {
+    boxDragging = false;
+    boxStart = null;
+    hideBoxOverlay();
+    if (panVectorized.hasPointerCapture(e.pointerId)) {
+      panVectorized.releasePointerCapture(e.pointerId);
+    }
+  });
+
+  panVectorized.addEventListener("mousemove", e => {
+    if (!isClickEditTool()) {
+      removeHoverHighlight();
+      return;
+    }
+    const el = resolveDrawable(e.target);
+    removeHoverHighlight();
+    if (el) el.classList.add("edit-hover-target");
+  });
+
+  panVectorized.addEventListener("mouseleave", removeHoverHighlight);
 }
 
 // ── Palette panel ─────────────────────────────────────────────
 function buildPalettePanel(palette) {
   paletteGrid.innerHTML = "";
-  palettePlaceholder.style.display = "none";
   btnResetPalette.disabled = false;
-  btnBakePalette.disabled = false;
+  setQuickEditEnabled(!!getPrimarySvg() || !!state.currentSvg);
 
   if (!palette || palette.length === 0) {
     palettePlaceholder.style.display = "";
     palettePlaceholder.querySelector("p").textContent = "No colors found in SVG";
     return;
   }
+  palettePlaceholder.style.display = "none";
 
   palette.forEach(({ color, count }) => {
+    const displayColor = state.recoloredColors[color] || color;
     const card = document.createElement("div");
     card.className = "swatch-card";
+    if (state.hiddenColors.has(color)) card.classList.add("hidden-color");
     card.dataset.color = color;
 
     const swatch = document.createElement("div");
     swatch.className = "swatch-color";
-    swatch.style.background = color;
+    swatch.style.background = displayColor;
 
     const countEl = document.createElement("span");
     countEl.className = "swatch-count";
@@ -527,13 +1223,23 @@ function buildPalettePanel(palette) {
     const colorInput = document.createElement("input");
     colorInput.type = "color";
     colorInput.className = "swatch-input";
-    colorInput.value = color;
+    colorInput.value = displayColor;
 
     // Visible color picker dot
     const pickerDot = document.createElement("div");
     pickerDot.className = "swatch-picker";
-    pickerDot.style.background = color;
+    pickerDot.style.background = displayColor;
     pickerDot.title = "Recolor";
+
+    const paintBtn = document.createElement("button");
+    paintBtn.type = "button";
+    paintBtn.className = "swatch-paint-btn";
+    paintBtn.title = "Set as paint color";
+    paintBtn.textContent = "\u25cf";
+    paintBtn.addEventListener("click", e => {
+      e.stopPropagation();
+      setPaintColor(displayColor);
+    });
 
     pickerDot.addEventListener("click", e => {
       e.stopPropagation();
@@ -542,14 +1248,20 @@ function buildPalettePanel(palette) {
 
     colorInput.addEventListener("input", e => {
       const newColor = e.target.value;
+      pushUndo();
       recolorPaths(color, newColor);
       swatch.style.background = newColor;
       pickerDot.style.background = newColor;
       state.recoloredColors[color] = newColor;
+      afterSvgEdit();
     });
 
-    card.addEventListener("click", () => toggleColorVisibility(color, card));
-    card.append(swatch, countEl, pickerDot, colorInput);
+    card.addEventListener("click", () => {
+      pushUndo();
+      toggleColorVisibility(color, card);
+      afterSvgEdit();
+    });
+    card.append(paintBtn, swatch, countEl, pickerDot, colorInput);
     paletteGrid.appendChild(card);
   });
 }
@@ -599,10 +1311,13 @@ function recolorPaths(oldColor, newColor) {
 btnResetPalette.addEventListener("click", () => {
   state.hiddenColors.clear();
   state.recoloredColors = {};
-  if (state.currentSvg) {
-    renderSvg(state.currentSvg);
-    const palette = extractPaletteFromCurrentSvg();
-    buildPalettePanel(palette);
+  resetEditHistory();
+  setEditToolMode("pan");
+  if (state.originalTraceSvg || state.currentSvg) {
+    const src = state.originalTraceSvg || state.currentSvg;
+    renderSvg(src);
+    state.currentSvg = src;
+    buildPalettePanel(extractPaletteFromCurrentSvg());
   }
 });
 
@@ -673,7 +1388,7 @@ function showPane(tab) {
 
 const zoomPanZones = []; // {applyTransform, reset} entries, used by renderSvg
 
-function setupZoomPan(container, contentsGetter) {
+function setupZoomPan(container, contentsGetter, { allowPan = () => true } = {}) {
   if (!container) return;
 
   let scale = 1, tx = 0, ty = 0;
@@ -700,6 +1415,7 @@ function setupZoomPan(container, contentsGetter) {
   }, { passive: false });
 
   container.addEventListener("mousedown", e => {
+    if (!allowPan()) return;
     // Don't hijack clicks on UI elements like split labels
     if (e.target.classList.contains("split-label")) return;
     dragging = true;
@@ -811,7 +1527,8 @@ function initZoomPan() {
   // Vectorized tab — just the SVG inside #svg-container.
   setupZoomPan(
     document.getElementById("pan-vectorized"),
-    () => [document.querySelector("#svg-container svg")]
+    () => [document.querySelector("#svg-container svg")],
+    { allowPan: () => !isEditToolActive() }
   );
 
   // Print tab — the entire poster canvas (poster + image + grid handles)
@@ -828,6 +1545,8 @@ function initZoomPan() {
 }
 
 initZoomPan();
+initPaintColorPicker();
+initSvgEditTools();
 
 splitOrigImg.addEventListener("load", () => {
   fitSplitMediaToHalves();
@@ -841,25 +1560,21 @@ window.addEventListener("resize", () => {
 });
 
 // ── Download ──────────────────────────────────────────────────
-btnDownload.addEventListener("click", () => downloadSvg(false));
-btnBakePalette.addEventListener("click", () => downloadSvg(true));
+btnDownload.addEventListener("click", () => downloadSvg());
 
-async function downloadSvg(bake) {
-  if (!state.currentSvg) return;
+async function downloadSvg() {
+  if (!state.currentSvg && !getPrimarySvg()) return;
 
   setDownloadButtonsBusy(true);
   try {
-    // If preview was downscaled, re-trace at full resolution for the download.
-    let svgStr;
-    if (state.resizePreview) {
-      svgStr = await fetchFinalSvg();
-      if (!svgStr) return; // error already reported
-    } else {
-      svgStr = state.currentSvg;
-    }
+    let svgStr = serializeWorkingSvg();
+    if (!svgStr) return;
 
-    if (bake) {
-      svgStr = applyPaletteEdits(svgStr);
+    // Full-res re-trace only when preview was downscaled and DOM has no structural edits.
+    if (state.resizePreview && state.undoStack.length === 0
+        && state.hiddenColors.size === 0 && Object.keys(state.recoloredColors).length === 0) {
+      const fullRes = await fetchFinalSvg();
+      if (fullRes) svgStr = fullRes;
     }
 
     const blob = new Blob([svgStr], { type: "image/svg+xml" });
@@ -936,15 +1651,11 @@ function applyPaletteEdits(svgStr) {
 function setDownloadButtonsBusy(busy) {
   if (busy) {
     btnDownload.dataset.label = btnDownload.textContent;
-    btnBakePalette.dataset.label = btnBakePalette.textContent;
     btnDownload.textContent = "Tracing…";
-    btnBakePalette.textContent = "Tracing…";
   } else {
     if (btnDownload.dataset.label) btnDownload.textContent = btnDownload.dataset.label;
-    if (btnBakePalette.dataset.label) btnBakePalette.textContent = btnBakePalette.dataset.label;
   }
   btnDownload.disabled = busy;
-  btnBakePalette.disabled = busy;
 }
 
 // ── Reset ─────────────────────────────────────────────────────
@@ -2051,7 +2762,5 @@ PRINT.btnPdf.addEventListener("click", async () => {
 // renderSvg is defined earlier; we attach a postRenderSvg callback that it calls.
 window.__onSvgRendered = function () {
   refreshPrintEnabled();
-  // Always rebuild the poster canvas after a fresh trace — palette edits in
-  // the Vectorized tab are reflected here as well, since we clone the trace.
   renderPosterCanvas();
 };
