@@ -46,7 +46,7 @@ Works well for classroom displays, event banners, shop signs, and craft projects
 
 | | Online vectorizers (Vectorizer.io, etc.) | Vectile |
 |---|------------------------------------------|---------|
-| **Cost** | Subscription or per-image credits | Free (MIT) |
+| **Cost** | Subscription or per-image credits | Free (GPL v2) |
 | **Privacy** | Upload images to their servers | 100% local — files never leave your PC |
 | **Poster printing** | Export or order prints; tiling often paid/cloud | **Free tile PDF** with cut/glue guides on standard paper |
 | **Editing** | Limited or none | In-app erase, paint, palette, background |
@@ -113,4 +113,4 @@ Open **http://127.0.0.1:8000** (browser may open automatically).
 
 ## License
 
-MIT
+[GNU General Public License v2.0](LICENSE)
