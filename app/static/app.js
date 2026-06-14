@@ -22,6 +22,8 @@ const state = {
   presets: [],
   hiddenColors: new Set(),
   recoloredColors: {},  // originalHex -> newHex
+  paletteRecolorSource: null,  // original palette key being recolored via paint picker
+  backgroundEditActive: false,
   editTools: { mode: "pan", paintColor: "#000000" },
   paintRecentColors: [],
   paintPickerHsl: { h: 0, s: 0, l: 0 },
@@ -119,8 +121,7 @@ const editPaintSl      = document.getElementById("edit-paint-sl");
 const editPaintSlCursor = document.getElementById("edit-paint-sl-cursor");
 const editPaintHue     = document.getElementById("edit-paint-hue");
 const editPaintRecent  = document.getElementById("edit-paint-recent");
-const editBgColor      = document.getElementById("edit-bg-color");
-const btnApplyBg      = document.getElementById("btn-apply-bg");
+const btnEditBg         = document.getElementById("btn-edit-bg");
 const editSpeckle     = document.getElementById("edit-speckle");
 const btnRemoveSpeckles = document.getElementById("btn-remove-speckles");
 const btnEditUndo     = document.getElementById("btn-edit-undo");
@@ -130,7 +131,6 @@ const EDIT_DRAWABLE = "path, polygon, rect, circle, ellipse, line, polyline";
 const VECTILE_BG_ID = "vectile-bg";
 const MAX_UNDO = 30;
 const MAX_PAINT_RECENT = 8;
-let bgColorInputLocked = false;
 
 const paintColorPicker = {
   swatch: () => editPaintSwatch,
@@ -220,8 +220,9 @@ async function handleFile(file) {
   resetEditHistory();
   state.originalTraceSvg = null;
   state.backgroundColor = "#ffffff";
-  // Each new upload re-enables poster auto-fit so the print panel starts in the
-  // right orientation for this image. User edits later will disable it again.
+  finishBackgroundEdit(false);
+  finishPaletteRecolor(false);
+  // Each new upload re-enables poster auto-fit
   state.printSettings.posterAutoFit = true;
 
   // For raster uploads we can use the original file for the "Original" preview;
@@ -231,7 +232,7 @@ async function handleFile(file) {
     state.originalTraceSvg = data.svg;
     resetEditHistory();
     state.backgroundColor = "#ffffff";
-    renderSvg(data.svg);
+    renderSvg(data.svg, { showTab: "vectorized" });
     buildPalettePanel(data.palette);
     btnDownload.disabled = false;
     originalImg.removeAttribute("src");
@@ -471,7 +472,7 @@ async function runVectorize() {
     resetEditHistory();
     state.backgroundColor = "#ffffff";
 
-    renderSvg(data.svg);
+    renderSvg(data.svg, { showTab: "vectorized" });
     buildPalettePanel(data.palette);
     updateStatusBar(data);
     btnDownload.disabled = false;
@@ -516,35 +517,130 @@ function fitMediaInZone(el, zone) {
   el.style.maxHeight = "none";
 }
 
-function fitSplitMediaToHalves() {
-  fitMediaInZone(
-    document.getElementById("split-original"),
-    document.querySelector("#split-half-left .split-pan-zone"),
-  );
-  // SVG viewBox units are not pixels — explicit sizing overshoots and clips.
-  const wrap = document.getElementById("split-svg");
-  const svg = wrap?.querySelector("svg");
-  if (svg) {
-    svg.style.removeProperty("width");
-    svg.style.removeProperty("height");
-    svg.style.removeProperty("max-width");
-    svg.style.removeProperty("max-height");
+function preparePreviewSvg(svg) {
+  if (!svg) return;
+  if (!svg.getAttribute("viewBox")) {
+    const w = parseFloat(svg.getAttribute("width"));
+    const h = parseFloat(svg.getAttribute("height"));
+    if (w > 0 && h > 0) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
   }
-  if (wrap) {
-    wrap.style.removeProperty("width");
-    wrap.style.removeProperty("height");
-  }
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 }
 
-function renderSvg(svgStr) {
+function resetVectorizedWrapperStyles() {
+  const wrap = document.getElementById("svg-container");
+  if (!wrap) return;
+  wrap.style.removeProperty("width");
+  wrap.style.removeProperty("height");
+  wrap.style.removeProperty("max-width");
+  wrap.style.removeProperty("max-height");
+  wrap.style.removeProperty("transform");
+}
+
+function measureZone(paneId, zoneEl) {
+  let zw = zoneEl?.clientWidth || 0;
+  let zh = zoneEl?.clientHeight || 0;
+  if (zw > 0 && zh > 0) return { zw, zh };
+  const pane = document.getElementById(paneId);
+  if (pane?.classList.contains("active")) {
+    const r = pane.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return { zw: r.width, zh: r.height };
+  }
+  return null;
+}
+
+function fitVectorizedPreview() {
+  const zone = document.getElementById("pan-vectorized");
+  const svg = svgContainer?.querySelector("svg");
+  if (!zone || !svg) return;
+  const ref = mediaIntrinsicSize(svg);
+  if (!ref) return;
+  const dims = measureZone("pane-vectorized", zone);
+  if (!dims) return;
+  const fit = Math.min(dims.zw / ref.w, dims.zh / ref.h);
+  if (!Number.isFinite(fit) || fit <= 0) return;
+  svg.style.width = `${ref.w * fit}px`;
+  svg.style.height = `${ref.h * fit}px`;
+  svg.style.maxWidth = "none";
+  svg.style.maxHeight = "none";
+}
+
+function schedulePreviewFit() {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      fitPreviewMedia();
+      reapplyAllZoomPan();
+    });
+  });
+}
+
+function fitSvgWrapperInZone(wrap, zone, ref) {
+  const svg = wrap?.querySelector("svg");
+  if (!wrap || !svg || !zone || !ref) return false;
+  const zw = zone.clientWidth;
+  const zh = zone.clientHeight;
+  if (zw <= 0 || zh <= 0) return false;
+  const fit = Math.min(zw / ref.w, zh / ref.h);
+  if (!Number.isFinite(fit) || fit <= 0) return false;
+  const w = ref.w * fit;
+  const h = ref.h * fit;
+  wrap.style.width = `${w}px`;
+  wrap.style.height = `${h}px`;
+  wrap.style.maxWidth = "none";
+  wrap.style.maxHeight = "none";
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  svg.style.maxWidth = "none";
+  svg.style.maxHeight = "none";
+  return true;
+}
+
+function fitSplitHalves() {
+  const zone = document.querySelector("#split-half-left .split-pan-zone");
+  const img = document.getElementById("split-original");
+  const wrap = document.getElementById("split-svg");
+  const svg = wrap?.querySelector("svg");
+  if (!zone || !wrap || !svg) return;
+  if (zone.clientWidth <= 0 || zone.clientHeight <= 0) return;
+
+  const ref = mediaIntrinsicSize(svg) || mediaIntrinsicSize(img);
+  if (!ref) return;
+
+  const fit = Math.min(zone.clientWidth / ref.w, zone.clientHeight / ref.h);
+  if (!Number.isFinite(fit) || fit <= 0) return;
+  const w = ref.w * fit;
+  const h = ref.h * fit;
+
+  if (mediaIntrinsicSize(img)) {
+    img.style.width = `${w}px`;
+    img.style.height = `${h}px`;
+    img.style.maxWidth = "none";
+    img.style.maxHeight = "none";
+  }
+
+  fitSvgWrapperInZone(wrap, zone, ref);
+}
+
+function fitPreviewMedia() {
+  fitVectorizedPreview();
+  fitSplitHalves();
+}
+
+function fitSplitMediaToHalves() {
+  fitPreviewMedia();
+}
+
+function renderSvg(svgStr, { showTab } = {}) {
+  finishBackgroundEdit(false);
   svgContainer.innerHTML = svgStr;
   splitSvgDiv.innerHTML = svgStr;
-  fitSplitMediaToHalves();
-  // The zoom-pan zones are bound at startup with content getters, so the new
-  // SVG element is picked up automatically. Re-apply the current transform
-  // so the new content matches the user's existing zoom/pan position.
-  reapplyAllZoomPan();
-  showPane(getCurrentTab());
+  resetVectorizedWrapperStyles();
+  preparePreviewSvg(svgContainer.querySelector("svg"));
+  preparePreviewSvg(splitSvgDiv.querySelector("svg"));
+  showPane(showTab ?? getCurrentTab());
+  schedulePreviewFit();
   syncBackgroundFromSvg();
   if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
 }
@@ -559,12 +655,33 @@ function serializeWorkingSvg() {
   return svg ? new XMLSerializer().serializeToString(svg) : state.currentSvg;
 }
 
-function syncSvgViewsFromPrimary() {
-  const svg = getPrimarySvg();
-  if (!svg) return;
-  splitSvgDiv.innerHTML = svgContainer.innerHTML;
-  fitSplitMediaToHalves();
+/** Strip preview-only CSS and restore width/height for svglib / download / print. */
+function serializeSvgForExport(svg) {
+  const el = svg || getPrimarySvg();
+  if (!el) return null;
+  const clone = el.cloneNode(true);
+  const dims = mediaIntrinsicSize(clone);
+  clone.removeAttribute("style");
+  clone.removeAttribute("class");
+  if (dims) {
+    clone.setAttribute("width", String(dims.w));
+    clone.setAttribute("height", String(dims.h));
+    if (!clone.getAttribute("viewBox")) {
+      clone.setAttribute("viewBox", `0 0 ${dims.w} ${dims.h}`);
+    }
+  }
+  return new XMLSerializer().serializeToString(clone);
+}
+
+function syncSplitSvgFromPrimary() {
+  const src = getPrimarySvg();
+  if (!src) return;
+  const clone = src.cloneNode(true);
+  preparePreviewSvg(clone);
+  splitSvgDiv.replaceChildren(clone);
+  fitSplitHalves();
   reapplyAllZoomPan();
+  // Primary (vectorized) keeps its size — do not re-fit or re-prepare it here.
 }
 
 // ── Paint color picker (HSL + hex + recent + eyedropper) ─────
@@ -709,7 +826,7 @@ function renderPickerRecent(picker) {
   });
 }
 
-function setPickerColor(picker, hex, { addRecent = true } = {}) {
+function setPickerColor(picker, hex, { addRecent = true, skipPickerRouting = false } = {}) {
   const normalized = normalizeColorToHex(hex);
   if (!normalized) return;
   const rgb = hexToRgb(normalized);
@@ -726,7 +843,14 @@ function setPickerColor(picker, hex, { addRecent = true } = {}) {
       normalized,
       ...picker.getRecent().filter(c => c !== normalized),
     ].slice(0, MAX_PAINT_RECENT));
-    renderPickerRecent(paintColorPicker);
+    renderPickerRecent(picker);
+  }
+  if (!skipPickerRouting && picker === paintColorPicker) {
+    if (state.backgroundEditActive) {
+      previewBackgroundColor(normalized);
+    } else if (state.paletteRecolorSource) {
+      recolorPaths(state.paletteRecolorSource, normalized);
+    }
   }
 }
 
@@ -748,38 +872,58 @@ function setPaintColor(hex, opts) {
   setPickerColor(paintColorPicker, hex, opts);
 }
 
-function setBackgroundInputColor(hex) {
+function updateBackgroundSwatchDisplay(hex) {
   const normalized = normalizeColorToHex(hex);
   if (!normalized) return;
   state.backgroundColor = normalized;
-  if (editBgColor) editBgColor.value = normalized;
+  if (btnEditBg) btnEditBg.style.background = normalized;
 }
 
 function syncBackgroundFromSvg() {
-  if (bgColorInputLocked) return;
   const bg = getPrimarySvg()?.querySelector(`#${VECTILE_BG_ID}`);
   if (bg) {
     const hex = getElementFillColor(bg);
-    if (hex) setBackgroundInputColor(hex);
-  } else if (editBgColor) {
-    editBgColor.value = state.backgroundColor;
+    if (hex) updateBackgroundSwatchDisplay(hex);
+  } else {
+    updateBackgroundSwatchDisplay(state.backgroundColor);
   }
+}
+
+function updateQuickEditHint() {
+  const el = document.getElementById("quick-edit-hint");
+  if (!el) return;
+  el.textContent = state.backgroundEditActive
+    ? "Adjust the paint color above to set background. Click the swatch again to finish."
+    : "Edit on the Vectorized tab canvas.";
+}
+
+function finishBackgroundEdit(sync = true) {
+  if (!state.backgroundEditActive) return;
+  state.backgroundEditActive = false;
+  btnEditBg?.classList.remove("recolor-active");
+  updateQuickEditHint();
+  if (sync) afterSvgEdit();
+}
+
+function startBackgroundEdit() {
+  if (state.backgroundEditActive) {
+    finishBackgroundEdit();
+    return;
+  }
+  finishPaletteRecolor(false);
+  pushUndo();
+  state.backgroundEditActive = true;
+  const bg = getPrimarySvg()?.querySelector(`#${VECTILE_BG_ID}`);
+  const current = bg ? getElementFillColor(bg) : state.backgroundColor;
+  setPaintColor(current || "#ffffff", { addRecent: false, skipPickerRouting: true });
+  btnEditBg?.classList.add("recolor-active");
+  updateQuickEditHint();
 }
 
 function initPaintColorPicker() {
   initColorPicker(paintColorPicker);
   renderPickerRecent(paintColorPicker);
-
-  editBgColor?.addEventListener("focus", () => { bgColorInputLocked = true; });
-  editBgColor?.addEventListener("blur", () => { bgColorInputLocked = false; });
-  editBgColor?.addEventListener("input", e => {
-    const hex = normalizeColorToHex(e.target.value);
-    if (hex) state.backgroundColor = hex;
-  });
-  editBgColor?.addEventListener("change", e => {
-    const hex = normalizeColorToHex(e.target.value);
-    if (hex) state.backgroundColor = hex;
-  });
+  updateBackgroundSwatchDisplay(state.backgroundColor);
 }
 
 function initColorPicker(picker) {
@@ -884,7 +1028,7 @@ function queryEditToolButtons() {
 }
 
 function setQuickEditEnabled(enabled) {
-  const ctrls = [editBgColor, btnApplyBg, editSpeckle, btnRemoveSpeckles];
+  const ctrls = [btnEditBg, editSpeckle, btnRemoveSpeckles];
   ctrls.forEach(el => { if (el) el.disabled = !enabled; });
   setPickerEnabled(paintColorPicker, enabled);
   queryEditToolButtons().forEach(btn => {
@@ -929,7 +1073,7 @@ function redoEdit() {
 }
 
 function afterSvgEdit() {
-  syncSvgViewsFromPrimary();
+  syncSplitSvgFromPrimary();
   const palette = extractPaletteFromCurrentSvg();
   buildPalettePanel(palette);
   updateStatusBarFromDom();
@@ -974,28 +1118,36 @@ function paintElement(el, color) {
   }
 }
 
-function applyBackgroundColor(color) {
-  const fill = normalizeColorToHex(color) || color;
-  if (!fill) return;
-  const svg = getPrimarySvg();
-  if (!svg) return;
-  pushUndo();
-  let bg = svg.querySelector(`#${VECTILE_BG_ID}`);
+function updateBackgroundRect(color) {
+  const fill = normalizeColorToHex(color);
+  if (!fill) return false;
+  const svgs = [
+    svgContainer.querySelector("svg"),
+    splitSvgDiv.querySelector("svg"),
+  ].filter(Boolean);
+  if (!svgs.length) return false;
   const dims = getSourceSvgDims();
   const w = dims?.w || 1000;
   const h = dims?.h || 1000;
-  if (!bg) {
-    bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bg.id = VECTILE_BG_ID;
-    bg.setAttribute("x", "0");
-    bg.setAttribute("y", "0");
-    bg.setAttribute("width", String(w));
-    bg.setAttribute("height", String(h));
-    svg.insertBefore(bg, svg.firstChild);
-  }
-  bg.setAttribute("fill", fill);
-  setBackgroundInputColor(fill);
-  afterSvgEdit();
+  svgs.forEach(svg => {
+    let bg = svg.querySelector(`#${VECTILE_BG_ID}`);
+    if (!bg) {
+      bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bg.id = VECTILE_BG_ID;
+      bg.setAttribute("x", "0");
+      bg.setAttribute("y", "0");
+      bg.setAttribute("width", String(w));
+      bg.setAttribute("height", String(h));
+      svg.insertBefore(bg, svg.firstChild);
+    }
+    bg.setAttribute("fill", fill);
+  });
+  return true;
+}
+
+function previewBackgroundColor(color) {
+  if (!updateBackgroundRect(color)) return;
+  updateBackgroundSwatchDisplay(color);
 }
 
 function removeSpeckles(thresholdPx) {
@@ -1111,8 +1263,9 @@ function initSvgEditTools() {
     });
   });
 
-  btnApplyBg?.addEventListener("click", () => {
-    if (editBgColor) applyBackgroundColor(editBgColor.value);
+  btnEditBg?.addEventListener("click", () => {
+    if (btnEditBg.disabled) return;
+    startBackgroundEdit();
   });
 
   btnRemoveSpeckles?.addEventListener("click", () => {
@@ -1192,6 +1345,68 @@ function initSvgEditTools() {
 }
 
 // ── Palette panel ─────────────────────────────────────────────
+function paletteFillMatchers(originalColor) {
+  const display = state.recoloredColors[originalColor] || originalColor;
+  return new Set([
+    originalColor,
+    originalColor.toUpperCase(),
+    display,
+    display.toUpperCase(),
+  ]);
+}
+
+function forEachPathWithPaletteColor(svg, originalColor, fn) {
+  const matchers = paletteFillMatchers(originalColor);
+  svg.querySelectorAll("[fill]").forEach(el => {
+    const fill = el.getAttribute("fill");
+    if (fill && matchers.has(fill)) fn(el);
+  });
+}
+
+function updatePaletteSwatchDisplay(originalColor, displayColor) {
+  const card = paletteGrid.querySelector(`[data-color="${originalColor}"]`);
+  if (!card) return;
+  const sw = card.querySelector(".swatch-color");
+  const dot = card.querySelector(".swatch-picker");
+  if (sw) sw.style.background = displayColor;
+  if (dot) dot.style.background = displayColor;
+}
+
+function updatePaletteHint() {
+  const el = document.getElementById("palette-hint");
+  if (!el) return;
+  el.textContent = state.paletteRecolorSource
+    ? "Adjust the paint color above to recolor this layer. Click the ring again to finish."
+    : "Click swatch to hide. Click ring to recolor with the paint picker above.";
+}
+
+function finishPaletteRecolor(sync = true) {
+  if (!state.paletteRecolorSource) return;
+  state.paletteRecolorSource = null;
+  paletteGrid?.querySelectorAll(".recolor-active").forEach(c => {
+    c.classList.remove("recolor-active");
+  });
+  updatePaletteHint();
+  if (sync) afterSvgEdit();
+}
+
+function startPaletteRecolor(originalColor) {
+  if (state.paletteRecolorSource === originalColor) {
+    finishPaletteRecolor();
+    return;
+  }
+  finishBackgroundEdit(false);
+  if (state.paletteRecolorSource) finishPaletteRecolor(false);
+  pushUndo();
+  state.paletteRecolorSource = originalColor;
+  const display = state.recoloredColors[originalColor] || originalColor;
+  setPaintColor(display, { addRecent: false, skipPickerRouting: true });
+  paletteGrid.querySelectorAll(".swatch-card").forEach(c => {
+    c.classList.toggle("recolor-active", c.dataset.color === originalColor);
+  });
+  updatePaletteHint();
+}
+
 function buildPalettePanel(palette) {
   paletteGrid.innerHTML = "";
   btnResetPalette.disabled = false;
@@ -1219,17 +1434,10 @@ function buildPalettePanel(palette) {
     countEl.className = "swatch-count";
     countEl.textContent = count;
 
-    // Hidden color picker input
-    const colorInput = document.createElement("input");
-    colorInput.type = "color";
-    colorInput.className = "swatch-input";
-    colorInput.value = displayColor;
-
-    // Visible color picker dot
     const pickerDot = document.createElement("div");
     pickerDot.className = "swatch-picker";
     pickerDot.style.background = displayColor;
-    pickerDot.title = "Recolor";
+    pickerDot.title = "Recolor with paint picker";
 
     const paintBtn = document.createElement("button");
     paintBtn.type = "button";
@@ -1238,77 +1446,82 @@ function buildPalettePanel(palette) {
     paintBtn.textContent = "\u25cf";
     paintBtn.addEventListener("click", e => {
       e.stopPropagation();
+      finishBackgroundEdit(false);
+      finishPaletteRecolor(false);
       setPaintColor(displayColor);
     });
 
     pickerDot.addEventListener("click", e => {
       e.stopPropagation();
-      colorInput.click();
-    });
-
-    colorInput.addEventListener("input", e => {
-      const newColor = e.target.value;
-      pushUndo();
-      recolorPaths(color, newColor);
-      swatch.style.background = newColor;
-      pickerDot.style.background = newColor;
-      state.recoloredColors[color] = newColor;
-      afterSvgEdit();
+      startPaletteRecolor(color);
     });
 
     card.addEventListener("click", () => {
+      finishBackgroundEdit(false);
+      finishPaletteRecolor(false);
       pushUndo();
       toggleColorVisibility(color, card);
       afterSvgEdit();
     });
-    card.append(paintBtn, swatch, countEl, pickerDot, colorInput);
+    card.append(paintBtn, swatch, countEl, pickerDot);
     paletteGrid.appendChild(card);
   });
+
+  if (state.paletteRecolorSource) {
+    const active = paletteGrid.querySelector(
+      `[data-color="${state.paletteRecolorSource}"]`,
+    );
+    if (active) active.classList.add("recolor-active");
+  }
+  updatePaletteHint();
 }
 
-function toggleColorVisibility(color, card) {
+function toggleColorVisibility(originalColor, card) {
   const svgs = [
     svgContainer.querySelector("svg"),
     splitSvgDiv.querySelector("svg"),
   ].filter(Boolean);
 
-  if (state.hiddenColors.has(color)) {
-    state.hiddenColors.delete(color);
+  if (state.hiddenColors.has(originalColor)) {
+    state.hiddenColors.delete(originalColor);
     card.classList.remove("hidden-color");
     svgs.forEach(svg => {
-      svg.querySelectorAll(`[fill="${color}"], [fill="${color.toUpperCase()}"]`).forEach(el => {
+      forEachPathWithPaletteColor(svg, originalColor, el => {
         el.style.display = "";
       });
     });
   } else {
-    state.hiddenColors.add(color);
+    state.hiddenColors.add(originalColor);
     card.classList.add("hidden-color");
     svgs.forEach(svg => {
-      svg.querySelectorAll(`[fill="${color}"], [fill="${color.toUpperCase()}"]`).forEach(el => {
+      forEachPathWithPaletteColor(svg, originalColor, el => {
         el.style.display = "none";
       });
     });
   }
 }
 
-function recolorPaths(oldColor, newColor) {
+function recolorPaths(originalColor, newColor) {
+  const normalized = normalizeColorToHex(newColor);
+  if (!normalized) return;
   const svgs = [
     svgContainer.querySelector("svg"),
     splitSvgDiv.querySelector("svg"),
   ].filter(Boolean);
 
   svgs.forEach(svg => {
-    svg.querySelectorAll(`[fill="${oldColor}"], [fill="${oldColor.toUpperCase()}"]`).forEach(el => {
-      el.setAttribute("fill", newColor);
+    forEachPathWithPaletteColor(svg, originalColor, el => {
+      el.setAttribute("fill", normalized);
     });
   });
 
-  // Update swatch card tracking color
-  const card = paletteGrid.querySelector(`[data-color="${oldColor}"]`);
-  if (card) card.dataset.color = newColor;
+  state.recoloredColors[originalColor] = normalized;
+  updatePaletteSwatchDisplay(originalColor, normalized);
 }
 
 btnResetPalette.addEventListener("click", () => {
+  finishBackgroundEdit(false);
+  finishPaletteRecolor(false);
   state.hiddenColors.clear();
   state.recoloredColors = {};
   resetEditHistory();
@@ -1372,12 +1585,10 @@ function showPane(tab) {
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
-  if (tab === "split") {
-    // Refit after the pane becomes visible — earlier calls saw 0×0 layout.
-    requestAnimationFrame(() => {
-      fitSplitMediaToHalves();
-      reapplyAllZoomPan();
-    });
+  state.activeTab = tab;
+  document.querySelector(".workspace")?.setAttribute("data-active-tab", tab);
+  if (tab === "split" || tab === "vectorized") {
+    schedulePreviewFit();
   }
 }
 
@@ -1398,7 +1609,7 @@ function setupZoomPan(container, contentsGetter, { allowPan = () => true } = {})
     const contents = (contentsGetter() || []).filter(Boolean);
     contents.forEach(el => {
       el.style.transformOrigin = "center center";
-      el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      el.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`;
     });
   }
 
@@ -1524,7 +1735,7 @@ function initZoomPan() {
     () => [document.getElementById("original-img")]
   );
 
-  // Vectorized tab — just the SVG inside #svg-container.
+  // Vectorized tab — pan/zoom the SVG element (wrapper stays passive for layout).
   setupZoomPan(
     document.getElementById("pan-vectorized"),
     () => [document.querySelector("#svg-container svg")],
@@ -1549,13 +1760,12 @@ initPaintColorPicker();
 initSvgEditTools();
 
 splitOrigImg.addEventListener("load", () => {
-  fitSplitMediaToHalves();
-  reapplyAllZoomPan();
+  schedulePreviewFit();
 });
 window.addEventListener("resize", () => {
-  if (getCurrentTab() === "split") {
-    fitSplitMediaToHalves();
-    reapplyAllZoomPan();
+  const tab = getCurrentTab();
+  if (tab === "split" || tab === "vectorized") {
+    schedulePreviewFit();
   }
 });
 
@@ -1567,7 +1777,7 @@ async function downloadSvg() {
 
   setDownloadButtonsBusy(true);
   try {
-    let svgStr = serializeWorkingSvg();
+    let svgStr = serializeSvgForExport();
     if (!svgStr) return;
 
     // Full-res re-trace only when preview was downscaled and DOM has no structural edits.
@@ -2723,9 +2933,8 @@ function renderRotateHandle() {
 })();
 
 PRINT.btnPdf.addEventListener("click", async () => {
-  const svg = svgContainer.querySelector("svg");
-  if (!svg) return;
-  const svgStr = new XMLSerializer().serializeToString(svg);
+  const svgStr = serializeSvgForExport();
+  if (!svgStr) return;
 
   PRINT.btnPdf.disabled = true;
   const originalText = PRINT.btnPdf.textContent;

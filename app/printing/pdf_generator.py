@@ -19,6 +19,7 @@ The drawing approach for each tile:
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -114,13 +115,68 @@ def _drawing_from_svg(svg_str: str):
     return drawing
 
 
-def _draw_tile(canvas: Canvas, drawing, grid: TileGrid, tile, settings: PrintSettings) -> None:
+def _parse_svg_viewbox_dims(svg_str: str) -> tuple[float, float] | None:
+    m = re.search(r'viewBox\s*=\s*["\']([^"\']+)["\']', svg_str, re.I)
+    if m:
+        parts = [float(x) for x in re.split(r"[\s,]+", m.group(1).strip()) if x]
+        if len(parts) == 4 and parts[2] > 0 and parts[3] > 0:
+            return parts[2], parts[3]
+    m = re.search(r'width\s*=\s*["\']?([\d.]+)', svg_str, re.I)
+    n = re.search(r'height\s*=\s*["\']?([\d.]+)', svg_str, re.I)
+    if m and n:
+        w, h = float(m.group(1)), float(n.group(1))
+        if w > 0 and h > 0:
+            return w, h
+    return None
+
+
+def _svg_user_units(svg_str: str, drawing) -> tuple[float, float]:
+    """Return SVG user-space width/height (viewBox when present).
+
+    svglib honors inline CSS width/height and can shrink the Drawing to the
+    on-screen preview size. Placement math must use viewBox units instead.
+    """
+    dims = _parse_svg_viewbox_dims(svg_str)
+    if dims:
+        return dims
+    return float(drawing.width or 1.0), float(drawing.height or 1.0)
+
+
+def _prepare_svg_for_pdf(svg_str: str) -> str:
+    """Strip preview CSS and ensure width/height match viewBox for svglib."""
+    dims = _parse_svg_viewbox_dims(svg_str)
+    # Drop inline style on the root <svg> — preview tabs set pixel width/height here.
+    svg_str = re.sub(
+        r"(<svg\b[^>]*?)\sstyle=(['\"])[^'\"]*\2",
+        r"\1",
+        svg_str,
+        count=1,
+        flags=re.I | re.S,
+    )
+    if not dims:
+        return svg_str
+    user_w, user_h = dims
+
+    def _set_attr(text: str, name: str, value: float) -> str:
+        pat = rf'{name}\s*=\s*["\'][^"\']*["\']'
+        repl = f'{name}="{value:g}"'
+        if re.search(pat, text, re.I):
+            return re.sub(pat, repl, text, count=1, flags=re.I)
+        return re.sub(r"(<svg\b)", rf'\1 {repl}', text, count=1, flags=re.I)
+
+    svg_str = _set_attr(svg_str, "width", user_w)
+    svg_str = _set_attr(svg_str, "height", user_h)
+    return svg_str
+
+
+def _draw_tile(canvas: Canvas, drawing, grid: TileGrid, tile, settings: PrintSettings,
+               *, svg_user_w: float, svg_user_h: float) -> None:
     """Draw one page: clipped SVG content + decorations."""
     layout = make_layout(grid)
 
-    # Native drawing extents — svglib gives the Drawing in PDF points already.
-    dwg_w = float(drawing.width) if drawing.width else 1.0
-    dwg_h = float(drawing.height) if drawing.height else 1.0
+    # User-space extents — must match the viewBox the UI used for placement.
+    dwg_w = svg_user_w
+    dwg_h = svg_user_h
 
     # ---- Image placement on the poster (in mm) ------------------------------
     if (settings.image_scale is not None
@@ -212,11 +268,13 @@ def _draw_tile(canvas: Canvas, drawing, grid: TileGrid, tile, settings: PrintSet
 
 def build_pdf(svg_str: str, settings: PrintSettings) -> bytes:
     """Generate a multi-page PDF for the given SVG and print settings."""
+    svg_str = _prepare_svg_for_pdf(svg_str)
     drawing = _drawing_from_svg(svg_str)
+    svg_w, svg_h = _svg_user_units(svg_str, drawing)
 
     grid = compute_settings_grid(
-        svg_view_w=float(drawing.width or 1.0),
-        svg_view_h=float(drawing.height or 1.0),
+        svg_view_w=svg_w,
+        svg_view_h=svg_h,
         settings=settings,
     )
 
@@ -230,7 +288,8 @@ def build_pdf(svg_str: str, settings: PrintSettings) -> bytes:
             if poster_intersection_mm(tile, grid.poster_w_mm, grid.poster_h_mm) is None:
                 continue
         canvas.setPageSize(page_size_pt)
-        _draw_tile(canvas, drawing, grid, tile, settings)
+        _draw_tile(canvas, drawing, grid, tile, settings,
+                   svg_user_w=svg_w, svg_user_h=svg_h)
         canvas.showPage()
 
     canvas.save()

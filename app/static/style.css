@@ -374,15 +374,27 @@ html, body {
   user-select: none;
 }
 .pan-container:active { cursor: grabbing; }
-.pan-container img, .pan-container svg, .pan-container > div {
+.pan-container img, .pan-container svg {
   max-width: 100%;
   max-height: 100%;
   transform-origin: center center;
 }
-#svg-container svg {
+
+#svg-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   max-width: 100%;
   max-height: 100%;
+}
+
+#svg-container svg {
   display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  overflow: visible;
 }
 
 /* Split view — fixed centre divider; each half pans/zooms independently in sync. */
@@ -413,25 +425,23 @@ html, body {
 
 .split-pan-zone img {
   display: block;
-  object-fit: contain;
+  object-fit: fill;
   transform-origin: center center;
+  flex-shrink: 0;
 }
 
 #split-svg {
   display: flex;
   align-items: center;
   justify-content: center;
-  max-width: 100%;
-  max-height: 100%;
   transform-origin: center center;
+  flex-shrink: 0;
 }
 
 #split-svg svg {
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   overflow: visible;
 }
 
@@ -690,27 +700,25 @@ html, body {
   color: var(--accent);
   font-weight: 600;
 }
-.edit-bg-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  justify-content: flex-end;
-}
-.edit-bg-row input[type=color] {
+.edit-bg-section { margin-bottom: 10px; }
+.edit-bg-swatch {
   width: 40px;
   height: 32px;
-  padding: 2px;
-  border: 1px solid var(--border);
+  padding: 0;
+  border: 2px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  background: var(--surface);
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
   flex-shrink: 0;
 }
-.edit-bg-row input[type=color]:disabled {
+.edit-bg-swatch:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+.edit-bg-swatch.recolor-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 #pan-vectorized.edit-mode-click,
@@ -776,6 +784,10 @@ html, body {
   align-self: start;
 }
 .swatch-card:hover { border-color: var(--accent); }
+.swatch-card.recolor-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
 .swatch-card.hidden-color { opacity: .35; }
 .swatch-card.hidden-color .swatch-color::after {
   content: "";
@@ -828,13 +840,6 @@ html, body {
 .swatch-paint-btn:hover {
   border-color: var(--accent);
   background: var(--accent);
-}
-input[type=color].swatch-input {
-  position: absolute;
-  width: 0; height: 0;
-  opacity: 0;
-  bottom: 4px; right: 4px;
-  pointer-events: none;
 }
 
 /* ─── Tab-context visibility ────────────────────────────────────────────── */

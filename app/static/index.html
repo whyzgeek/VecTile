@@ -349,7 +349,7 @@
               <button class="btn btn-ghost btn-sm" id="btn-edit-redo" disabled title="Redo">Redo</button>
             </div>
           </div>
-          <p class="hint-text quick-edit-hint">Edit on the Vectorized tab canvas.</p>
+          <p class="hint-text quick-edit-hint" id="quick-edit-hint">Edit on the Vectorized tab canvas.</p>
           <div class="edit-tool-grid" id="edit-tool-grid" role="group" aria-label="Edit tools">
             <button type="button" class="edit-tool-btn active" data-edit-tool="pan" title="Pan and zoom">Pan</button>
             <button type="button" class="edit-tool-btn" data-edit-tool="clickErase" title="Click a shape to remove it">Click erase</button>
@@ -371,12 +371,9 @@
               <button type="button" class="edit-tool-btn" data-edit-tool="boxPaint" title="Drag a box to paint shapes">Box paint</button>
             </div>
           </div>
-          <div class="control-row">
-            <label for="edit-bg-color">Background</label>
-            <div class="edit-bg-row">
-              <input type="color" id="edit-bg-color" value="#ffffff" disabled />
-              <button type="button" class="btn btn-ghost btn-sm" id="btn-apply-bg" disabled>Apply</button>
-            </div>
+          <div class="control-row edit-bg-section">
+            <label for="btn-edit-bg">Background</label>
+            <button type="button" class="edit-bg-swatch" id="btn-edit-bg" disabled title="Click to edit with paint picker above"></button>
           </div>
           <div class="control-row">
             <label for="edit-speckle">Remove speckles</label>
@@ -394,7 +391,7 @@
               <button class="btn btn-ghost btn-sm" id="btn-reset-palette" disabled>Reset</button>
             </div>
           </div>
-          <p class="hint-text">Click swatch to hide. Use &#9679; to set paint color.</p>
+          <p class="hint-text" id="palette-hint">Click swatch to hide. Click ring to recolor with the paint picker above.</p>
           <div id="palette-placeholder" class="palette-placeholder">
             <p>Palette appears after tracing</p>
           </div>
