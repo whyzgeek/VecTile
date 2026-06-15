@@ -77,6 +77,8 @@ const state = {
 };
 
 let debounceTimer = null;
+let tracingInFlight = 0;
+let tracingDebouncePending = false;
 let abortController = null;
 
 // ── DOM refs ──────────────────────────────────────────────────
@@ -429,6 +431,8 @@ quantizeSlider.addEventListener("change", () => {
 // ── Vectorize ─────────────────────────────────────────────────
 function scheduleVectorize() {
   if (!state.imageId) return;
+  tracingDebouncePending = true;
+  updateTracingOverlay();
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(runVectorize, DEBOUNCE_MS);
 }
@@ -439,7 +443,8 @@ async function runVectorize() {
   if (abortController) abortController.abort();
   abortController = new AbortController();
 
-  showTracingOverlay(true);
+  tracingDebouncePending = false;
+  beginTracing();
 
   try {
     const body = {
@@ -460,7 +465,6 @@ async function runVectorize() {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: "Trace failed" }));
       console.error("Vectorize error:", err.detail);
-      showTracingOverlay(false);
       return;
     }
 
@@ -472,14 +476,14 @@ async function runVectorize() {
     resetEditHistory();
     state.backgroundColor = "#ffffff";
 
-    renderSvg(data.svg, { showTab: "vectorized" });
+    renderSvg(data.svg);
     buildPalettePanel(data.palette);
     updateStatusBar(data);
     btnDownload.disabled = false;
   } catch (err) {
     if (err.name !== "AbortError") console.error(err);
   } finally {
-    showTracingOverlay(false);
+    endTracing();
   }
 }
 
@@ -1800,25 +1804,30 @@ async function downloadSvg() {
 }
 
 async function fetchFinalSvg() {
-  const body = {
-    image_id: state.imageId,
-    engine: state.engine,
-    params: state.params,
-    quantize_colors: state.quantizeColors,
-    resize_preview: false, // full-resolution re-trace for the export
-  };
-  const res = await fetch("/api/vectorize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: "Final trace failed" }));
-    alert("Could not generate full-resolution SVG: " + (err.detail || "unknown error"));
-    return null;
+  beginTracing();
+  try {
+    const body = {
+      image_id: state.imageId,
+      engine: state.engine,
+      params: state.params,
+      quantize_colors: state.quantizeColors,
+      resize_preview: false, // full-resolution re-trace for the export
+    };
+    const res = await fetch("/api/vectorize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Final trace failed" }));
+      alert("Could not generate full-resolution SVG: " + (err.detail || "unknown error"));
+      return null;
+    }
+    const data = await res.json();
+    return data.svg;
+  } finally {
+    endTracing();
   }
-  const data = await res.json();
-  return data.svg;
 }
 
 function applyPaletteEdits(svgStr) {
@@ -1895,9 +1904,22 @@ function updateStatusBar(data) {
   statusPaths.textContent = `${pathCount} paths`;
 }
 
-// ── Overlay ───────────────────────────────────────────────────
-function showTracingOverlay(show) {
-  tracingOverlay.style.display = show ? "" : "none";
+// ── Tracing overlay (all preview tabs) ───────────────────────
+function updateTracingOverlay() {
+  if (!tracingOverlay) return;
+  const visible = tracingInFlight > 0 || tracingDebouncePending;
+  tracingOverlay.style.display = visible ? "" : "none";
+  tracingOverlay.setAttribute("aria-busy", visible ? "true" : "false");
+}
+
+function beginTracing() {
+  tracingInFlight++;
+  updateTracingOverlay();
+}
+
+function endTracing() {
+  tracingInFlight = Math.max(0, tracingInFlight - 1);
+  updateTracingOverlay();
 }
 
 /* ════════════════════════════════════════════════════════════════════════

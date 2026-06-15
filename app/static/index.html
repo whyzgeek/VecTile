@@ -276,6 +276,10 @@
       </div>
 
       <div class="preview-area" id="preview-area">
+        <div class="tracing-overlay" id="tracing-overlay" style="display:none" aria-live="polite" aria-busy="false">
+          <div class="spinner"></div>
+          <span>Tracing&hellip;</span>
+        </div>
         <div class="preview-placeholder" id="preview-placeholder">
           <p>Upload an image or PDF to get started</p>
         </div>
@@ -287,10 +291,6 @@
         </div>
 
         <div class="preview-pane" id="pane-vectorized">
-          <div class="tracing-overlay" id="tracing-overlay" style="display:none">
-            <div class="spinner"></div>
-            <span>Tracing&hellip;</span>
-          </div>
           <div class="pan-container" id="pan-vectorized" tabindex="0">
             <div id="svg-container"></div>
             <div id="edit-box-overlay" class="edit-box-overlay hidden" aria-hidden="true"></div>
