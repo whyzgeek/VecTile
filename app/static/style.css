@@ -369,6 +369,8 @@ html, body {
 .preview-area:not(.has-image) #pane-vectorized,
 .preview-area:not(.has-image) #pane-split { display: none; }
 .preview-area.has-image .preview-placeholder { display: none; }
+/* Print tab has its own placeholder — don't stack the upload prompt on top */
+.workspace[data-active-tab="print"] .preview-placeholder { display: none; }
 /* Poster canvas hidden inside print pane until ready */
 .preview-area:not(.has-image) #pane-print .pan-container { display: none; }
 .preview-area.has-image #print-tab-placeholder { display: none; }
@@ -875,6 +877,8 @@ html, body {
 .print-controls .section { padding: 8px 0; }
 .print-controls .section-title { margin-bottom: 6px; }
 .size-inputs { display: flex; align-items: center; gap: 6px; flex: 1; }
+.print-custom-row { justify-content: flex-end; }
+.print-custom-row .size-inputs { flex: 0 1 auto; }
 .size-inputs input {
   width: 60px;
   padding: 4px 6px;
@@ -1079,8 +1083,19 @@ html, body {
 .print-tab-placeholder {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text2); font-size: 14px; pointer-events: none;
-  z-index: 1;
+  padding: 24px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 14px;
+  line-height: 1.5;
+  pointer-events: none;
+  z-index: 2;
+  background: var(--bg);
+}
+.print-tab-placeholder p {
+  margin: 0;
+  max-width: 28em;
+  color: var(--text);
 }
 .print-placeholder {
   padding: 16px;

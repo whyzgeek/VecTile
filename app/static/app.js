@@ -1942,6 +1942,8 @@ const PRINT = {
   marginSlider:      document.getElementById("print-margin"),
   marginVal:         document.getElementById("print-margin-val"),
   posterModeSelect:  document.getElementById("print-poster-mode"),
+  posterSizeSection: document.getElementById("print-poster-size-section"),
+  singlePageHint:    document.getElementById("print-single-page-hint"),
   dimRow:            document.getElementById("print-dim-row"),
   posterW:           document.getElementById("print-poster-w"),
   posterH:           document.getElementById("print-poster-h"),
@@ -2096,15 +2098,27 @@ function refreshPrintEnabled() {
   if (ready) schedulePrintCalc();
 }
 
+function syncCustomPaperFromInputs() {
+  if (state.printSettings.paper_name !== "Custom") return;
+  state.printSettings.paper_w_mm = unitToMm(parseFloat(PRINT.customW.value) || 0);
+  state.printSettings.paper_h_mm = unitToMm(parseFloat(PRINT.customH.value) || 0);
+}
+
+function updatePrintModeUi() {
+  const tiled = !state.printSettings.single_page;
+  PRINT.overlapSection.style.display = tiled ? "" : "none";
+  if (PRINT.decorationsSection) PRINT.decorationsSection.style.display = tiled ? "" : "none";
+  if (PRINT.posterSizeSection) PRINT.posterSizeSection.style.display = tiled ? "" : "none";
+  if (PRINT.singlePageHint) PRINT.singlePageHint.style.display = tiled ? "none" : "";
+}
+
 // ── Mode tabs (Tile / Single) ────────────────────────────────
 PRINT.modeTabs.querySelectorAll("button").forEach(btn => {
   btn.addEventListener("click", () => {
     PRINT.modeTabs.querySelectorAll("button").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     state.printSettings.single_page = btn.dataset.printMode === "single";
-    const tiled = !state.printSettings.single_page;
-    PRINT.overlapSection.style.display = tiled ? "" : "none";
-    if (PRINT.decorationsSection) PRINT.decorationsSection.style.display = tiled ? "" : "none";
+    updatePrintModeUi();
     renderPosterGrid();
     schedulePrintCalc();
   });
@@ -2124,16 +2138,30 @@ PRINT.orientationRow.querySelectorAll("button").forEach(btn => {
 PRINT.paperSelect.addEventListener("change", () => {
   state.printSettings.paper_name = PRINT.paperSelect.value;
   PRINT.customRow.style.display = PRINT.paperSelect.value === "Custom" ? "" : "none";
+  syncCustomPaperFromInputs();
   schedulePrintCalc();
 });
-PRINT.customW.addEventListener("change", () => {
-  state.printSettings.paper_w_mm = unitToMm(parseFloat(PRINT.customW.value));
+function customPaperSelectLabel() {
+  const w = state.printSettings.paper_w_mm;
+  const h = state.printSettings.paper_h_mm;
+  const u = unitSuffix();
+  if (w > 0 && h > 0) {
+    return `Custom (${fmtLen(w)} \u00d7 ${fmtLen(h)} ${u})`;
+  }
+  return "Custom (W\u00d7L)";
+}
+
+function onCustomPaperInput() {
+  syncCustomPaperFromInputs();
+  if (state.printSettings.paper_name === "Custom") {
+    rebuildPaperSelectLabels();
+  }
   schedulePrintCalc();
-});
-PRINT.customH.addEventListener("change", () => {
-  state.printSettings.paper_h_mm = unitToMm(parseFloat(PRINT.customH.value));
-  schedulePrintCalc();
-});
+}
+PRINT.customW.addEventListener("input", onCustomPaperInput);
+PRINT.customH.addEventListener("input", onCustomPaperInput);
+PRINT.customW.addEventListener("change", onCustomPaperInput);
+PRINT.customH.addEventListener("change", onCustomPaperInput);
 
 // ── Margin (live update on input drag) ───────────────────────
 PRINT.marginSlider.addEventListener("input", () => {
@@ -2227,8 +2255,16 @@ function refreshPrintInputs() {
   // Number inputs: poster width/height, custom paper W/H
   PRINT.posterW.value = fmtLen(state.printSettings.poster_w_mm);
   PRINT.posterH.value = fmtLen(state.printSettings.poster_h_mm);
-  if (state.printSettings.paper_w_mm) PRINT.customW.value = fmtLen(state.printSettings.paper_w_mm);
-  if (state.printSettings.paper_h_mm) PRINT.customH.value = fmtLen(state.printSettings.paper_h_mm);
+  if (state.printSettings.paper_w_mm > 0) {
+    PRINT.customW.value = fmtLen(state.printSettings.paper_w_mm);
+  } else {
+    PRINT.customW.value = "";
+  }
+  if (state.printSettings.paper_h_mm > 0) {
+    PRINT.customH.value = fmtLen(state.printSettings.paper_h_mm);
+  } else {
+    PRINT.customH.value = "";
+  }
 
   // Sync the toggle-button visual state with state values
   syncEngineTabSelections();
@@ -2251,6 +2287,7 @@ function refreshPrintInputs() {
   rebuildPaperSelectLabels();
 
   // Refresh the live tile overlay and summary so they match the new unit context
+  updatePrintModeUi();
   if (state.printGrid) renderPrintSummary(state.printGrid);
 }
 
@@ -2267,7 +2304,7 @@ function rebuildPaperSelectLabels() {
   });
   const customOpt = document.createElement("option");
   customOpt.value = "Custom";
-  customOpt.textContent = "Custom\u2026";
+  customOpt.textContent = customPaperSelectLabel();
   PRINT.paperSelect.appendChild(customOpt);
   PRINT.paperSelect.value = selected || state.printSettings.paper_name;
 }
@@ -2351,6 +2388,19 @@ function posterDimensionsForPlacement() {
 // ── Compute poster dimensions from the chosen UI mode ────────
 function effectivePosterDimensions() {
   const settings = state.printSettings;
+
+  // Single page: poster canvas = printable area of the chosen paper sheet.
+  if (settings.single_page) {
+    const paper = paperWHForCurrentSettings();
+    if (paper) {
+      const m = settings.margin_mm;
+      return {
+        w: Math.max(1, paper.w - 2 * m),
+        h: Math.max(1, paper.h - 2 * m),
+      };
+    }
+  }
+
   if (settings.poster_mode === "dimensions") {
     return { w: settings.poster_w_mm, h: settings.poster_h_mm };
   }

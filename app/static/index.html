@@ -133,12 +133,11 @@
               <label for="print-paper">Size</label>
               <select id="print-paper" class="full-select"></select>
             </div>
-            <div class="control-row" id="print-custom-row" style="display:none">
-              <label><span data-unit-label>Custom (mm)</span></label>
+            <div class="control-row print-custom-row" id="print-custom-row" style="display:none">
               <div class="size-inputs">
-                <input type="number" id="print-custom-w" min="50" max="2000" step="1" value="210" />
+                <input type="number" id="print-custom-w" min="0" max="2000" step="1" value="" placeholder="0" aria-label="Custom paper width" />
                 <span>&times;</span>
-                <input type="number" id="print-custom-h" min="50" max="2000" step="1" value="297" />
+                <input type="number" id="print-custom-h" min="0" max="2000" step="1" value="" placeholder="0" aria-label="Custom paper length" />
               </div>
             </div>
             <div class="control-row" id="print-orientation-row">
@@ -157,8 +156,9 @@
             </div>
           </section>
 
-          <section class="section">
+          <section class="section" id="print-poster-size-section">
             <h3 class="section-title">Poster size</h3>
+            <p class="hint-text" id="print-single-page-hint" style="display:none">Single page uses your paper size (minus margin) as the poster canvas.</p>
             <div class="control-row">
               <label>Specify by</label>
               <select id="print-poster-mode" class="full-select">
@@ -178,11 +178,11 @@
             <div id="print-dim-row" class="control-row" style="display:none">
               <label>Final size <span data-unit-label>(mm)</span></label>
               <div class="size-inputs">
-                <input type="number" id="print-poster-w" min="10" max="6000" step="10" value="420" />
+                <input type="number" id="print-poster-w" min="10" max="6000" step="10" value="420" aria-label="Poster width" />
                 <button class="lock-btn locked" id="print-aspect-lock" title="Lock aspect ratio to source image" aria-label="Lock aspect ratio">
                   <span class="lock-icon" aria-hidden="true"></span>
                 </button>
-                <input type="number" id="print-poster-h" min="10" max="6000" step="10" value="594" />
+                <input type="number" id="print-poster-h" min="10" max="6000" step="10" value="594" aria-label="Poster length" />
               </div>
             </div>
             <div id="print-scale-row" class="control-row" style="display:none">

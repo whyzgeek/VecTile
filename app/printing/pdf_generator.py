@@ -30,7 +30,7 @@ from svglib.svglib import svg2rlg
 from . import decorations as deco
 from .decorations import MM_TO_PT, Layout, make_layout
 from .paper_sizes import get_paper_size
-from .tiler import TileGrid, compute_grid, poster_intersection_mm
+from .tiler import TileGrid, compute_grid, poster_intersection_mm, _maybe_swap
 
 
 @dataclass
@@ -83,17 +83,32 @@ def _resolve_paper(settings: PrintSettings) -> tuple[float, float]:
     return get_paper_size(settings.paper_name)
 
 
+def _poster_mm_for_settings(settings: PrintSettings) -> tuple[float, float]:
+    """Poster canvas size in mm.
+
+    Single-page mode: the printable area of the chosen paper sheet.
+    Tile mode: explicit poster dimensions from the UI (grid / dimensions / scale).
+    """
+    if settings.single_page:
+        paper_w, paper_h = _resolve_paper(settings)
+        paper_w, paper_h = _maybe_swap(paper_w, paper_h, settings.orientation)
+        m = settings.margin_mm
+        return max(1.0, paper_w - 2 * m), max(1.0, paper_h - 2 * m)
+    return settings.poster_w_mm, settings.poster_h_mm
+
+
 def compute_settings_grid(svg_view_w: float, svg_view_h: float,
                            settings: PrintSettings) -> TileGrid:
     """Convenience: resolve paper preset + run compute_grid."""
     paper_w, paper_h = _resolve_paper(settings)
+    poster_w, poster_h = _poster_mm_for_settings(settings)
     return compute_grid(
         svg_view_w=svg_view_w,
         svg_view_h=svg_view_h,
         paper_w_mm=paper_w,
         paper_h_mm=paper_h,
-        poster_w_mm=settings.poster_w_mm,
-        poster_h_mm=settings.poster_h_mm,
+        poster_w_mm=poster_w,
+        poster_h_mm=poster_h,
         overlap_mm=settings.overlap_mm,
         margin_mm=settings.margin_mm,
         orientation=settings.orientation,
