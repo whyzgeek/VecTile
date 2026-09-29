@@ -126,7 +126,7 @@ const editPaintHue     = document.getElementById("edit-paint-hue");
 const editPaintRecent  = document.getElementById("edit-paint-recent");
 const editPaintPanel   = document.getElementById("edit-paint-panel");
 const editSpeckle     = document.getElementById("edit-speckle");
-const btnRemoveSpeckles = document.getElementById("btn-remove-speckles");
+const editSpeckleVal  = document.getElementById("edit-speckle-val");
 const btnEditUndo     = document.getElementById("btn-edit-undo");
 const btnEditRedo     = document.getElementById("btn-edit-redo");
 
@@ -661,6 +661,7 @@ function fitSplitMediaToHalves() {
 }
 
 function renderSvg(svgStr, { showTab } = {}) {
+  endSpeckleSession({ commit: false });
   svgContainer.innerHTML = svgStr;
   splitSvgDiv.innerHTML = svgStr;
   resetVectorizedWrapperStyles();
@@ -687,6 +688,7 @@ function serializeSvgForExport(svg) {
   const el = svg || getPrimarySvg();
   if (!el) return null;
   const clone = el.cloneNode(true);
+  stripSpecklePlaceholders(clone);
   const dims = mediaIntrinsicSize(clone);
   clone.removeAttribute("style");
   clone.removeAttribute("class");
@@ -999,7 +1001,7 @@ function queryEditToolButtons() {
 }
 
 function setQuickEditEnabled(enabled) {
-  const ctrls = [editSpeckle, btnRemoveSpeckles];
+  const ctrls = [editSpeckle];
   ctrls.forEach(el => { if (el) el.disabled = !enabled; });
   setPickerEnabled(paintColorPicker, enabled);
   queryEditToolButtons().forEach(btn => {
@@ -1011,6 +1013,7 @@ function setQuickEditEnabled(enabled) {
 }
 
 function pushUndo() {
+  endSpeckleSession();
   const snap = serializeWorkingSvg();
   if (!snap) return;
   state.undoStack.push(snap);
@@ -1086,41 +1089,153 @@ function paintElement(el, color) {
   }
 }
 
-function removeSpeckles(thresholdPx) {
-  const svg = getPrimarySvg();
-  if (!svg) return;
-  const dims = getSourceSvgDims();
-  if (!dims) return;
-  const viewMax = Math.max(dims.w, dims.h);
-  const container = panVectorized || svgContainer;
-  const cw = container?.clientWidth || viewMax;
-  const scale = viewMax / Math.max(cw, 1);
-  const threshold = thresholdPx * scale;
+// ── Remove specks (live, reversible) ──
+// Dragging the slider hides shapes smaller than N screen px; dragging back
+// restores them. Removed shapes are swapped for comment placeholders so they
+// can go back to their exact place in the stacking order. The adjustment is
+// one undo step and is committed when another edit happens or the SVG is
+// replaced (the slider then returns to Off).
+const SPECK_PLACEHOLDER = "vectile-speck";
+let speckleSession = null; // {entries: [{el, size, placeholder}]}
 
-  pushUndo();
-  let removed = 0;
-  svg.querySelectorAll(EDIT_DRAWABLE).forEach(el => {
-    if (el.id === VECTILE_BG_ID) return;
+// The traced view currently on screen (a hidden SVG measures 0 wide).
+function visibleTracedSvg() {
+  return [getPrimarySvg(), splitSvgDiv.querySelector("svg")]
+    .find(el => el && el.isConnected && el.getBoundingClientRect().width > 0) || null;
+}
+
+function stripSpecklePlaceholders(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+  const found = [];
+  while (walker.nextNode()) if (walker.currentNode.data === SPECK_PLACEHOLDER) found.push(walker.currentNode);
+  found.forEach(c => c.remove());
+}
+
+function endSpeckleSession({ commit = true } = {}) {
+  if (!speckleSession) return;
+  if (commit) {
+    speckleSession.entries.forEach(e => { if (e.placeholder) e.placeholder.remove(); });
+  }
+  speckleSession = null;
+  if (editSpeckle) editSpeckle.value = 0;
+  if (editSpeckleVal) editSpeckleVal.textContent = "Off";
+}
+
+// Measure every shape once, in whichever traced view is on screen (a hidden
+// SVG reports 0x0 sizes). Sizes are kept in SVG units.
+function startSpeckleSession() {
+  const svg = getPrimarySvg();
+  const measured = visibleTracedSvg();
+  if (!svg || !measured) return null;
+  const primaryEls = [...svg.querySelectorAll(EDIT_DRAWABLE)];
+  const entries = [...measured.querySelectorAll(EDIT_DRAWABLE)].map((el, i) => {
+    const target = primaryEls[i];
+    if (!target || target.id === VECTILE_BG_ID) return null;
     try {
       const bb = el.getBBox();
-      if (Math.max(bb.width, bb.height) < threshold) {
-        el.remove();
-        removed++;
-      }
-    } catch { /* skip */ }
-  });
-  if (removed === 0) {
-    state.undoStack.pop();
-    updateEditUndoButtons();
-    return;
+      return { el: target, size: Math.max(bb.width, bb.height), placeholder: null };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+  pushUndo(); // one undo step for the whole adjustment
+  speckleSession = { entries };
+  return speckleSession;
+}
+
+function applySpeckleThreshold(thresholdPx) {
+  const dims = getSourceSvgDims();
+  if (!dims) return;
+  let session = speckleSession;
+  if (!session) {
+    if (thresholdPx <= 0) return;
+    session = startSpeckleSession();
+    if (!session) {
+      editSpeckle.value = 0;
+      editSpeckleVal.textContent = "Off";
+      flashEditHint("Open the Vectorized or Side by Side tab to remove specks.");
+      return;
+    }
   }
-  afterSvgEdit();
+  // Screen px -> SVG units at the current zoom of whichever view is shown.
+  const view = visibleTracedSvg();
+  if (!view) return;
+  const threshold = thresholdPx * dims.w / view.getBoundingClientRect().width;
+  let hidden = 0;
+  session.entries.forEach(e => {
+    const small = e.size < threshold;
+    if (small && !e.placeholder) {
+      e.placeholder = document.createComment(SPECK_PLACEHOLDER);
+      e.el.replaceWith(e.placeholder);
+    } else if (!small && e.placeholder) {
+      e.placeholder.replaceWith(e.el);
+      e.placeholder = null;
+    }
+    if (e.placeholder) hidden++;
+  });
+  editSpeckleVal.textContent = thresholdPx > 0 ? `${thresholdPx}px` : "Off";
+  flashEditHint(thresholdPx > 0
+    ? `Removing ${hidden} shape${hidden === 1 ? "" : "s"} smaller than ${thresholdPx}px. Drag back to restore.`
+    : "All specks restored.");
+}
+
+// ── Edit zones: where Quick Edit tools take pointer input ──────
+// The Vectorized canvas edits the primary SVG directly. The Side by Side
+// vectorized half shows a clone; its shapes are mapped back to the primary by
+// position in document order, and afterSvgEdit() re-syncs the clone.
+const EDIT_HIT_RADII = [3, 6, 9]; // px rings searched when a click misses thin strokes
+const splitHalfRight = document.getElementById("split-half-right");
+const editZones = [
+  { container: panVectorized, svg: () => getPrimarySvg(), overlay: editBoxOverlay },
+  { container: splitHalfRight, svg: () => splitSvgDiv.querySelector("svg"), overlay: null },
+].filter(z => z.container);
+
+function toPrimaryDrawable(el, zoneSvg) {
+  const primary = getPrimarySvg();
+  if (!el || !zoneSvg || !primary) return null;
+  if (zoneSvg === primary) return el;
+  const i = [...zoneSvg.querySelectorAll(EDIT_DRAWABLE)].indexOf(el);
+  return i >= 0 ? primary.querySelectorAll(EDIT_DRAWABLE)[i] || null : null;
+}
+
+// Drawable under (x, y) in the zone's SVG, or the nearest one within a few px.
+function drawableNear(zone, x, y) {
+  const svg = zone.svg();
+  if (!svg) return null;
+  const at = (px, py) => {
+    const el = resolveDrawable(document.elementFromPoint(px, py));
+    return el && svg.contains(el) ? el : null;
+  };
+  let el = at(x, y);
+  for (const r of EDIT_HIT_RADII) {
+    if (el) break;
+    for (let a = 0; a < 8 && !el; a++) {
+      el = at(x + r * Math.cos(a * Math.PI / 4), y + r * Math.sin(a * Math.PI / 4));
+    }
+  }
+  return el;
 }
 
 function removeHoverHighlight() {
-  getPrimarySvg()?.querySelectorAll(".edit-hover-target").forEach(el => {
+  editZones.forEach(z => z.svg()?.querySelectorAll(".edit-hover-target").forEach(el => {
     el.classList.remove("edit-hover-target");
-  });
+  }));
+}
+
+let editHintTimer = null;
+const EDIT_HINT_DEFAULT = "Touch up the traced shapes on the Vectorized or Side by Side tab. Re-tracing discards these edits.";
+
+// Brief result message in the Quick Edit hint, so every action visibly responds.
+function flashEditHint(msg) {
+  const el = document.getElementById("quick-edit-hint");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add("flash");
+  clearTimeout(editHintTimer);
+  editHintTimer = setTimeout(() => {
+    el.textContent = EDIT_HINT_DEFAULT;
+    el.classList.remove("flash");
+  }, 3500);
 }
 
 function setEditToolMode(mode) {
@@ -1128,46 +1243,51 @@ function setEditToolMode(mode) {
   queryEditToolButtons().forEach(btn => {
     btn.classList.toggle("active", btn.dataset.editTool === mode);
   });
-  if (panVectorized) {
-    panVectorized.classList.toggle("edit-mode-click", isClickEditTool() && !isEyedropperTool());
-    panVectorized.classList.toggle("edit-mode-eyedropper", isEyedropperTool());
-    panVectorized.classList.toggle("edit-mode-box", isBoxEditTool());
-  }
+  editZones.forEach(({ container }) => {
+    container.classList.toggle("edit-mode-click", isClickEditTool() && !isEyedropperTool());
+    container.classList.toggle("edit-mode-eyedropper", isEyedropperTool());
+    container.classList.toggle("edit-mode-box", isBoxEditTool());
+    container.classList.toggle("edit-mode-erase", isEraseTool());
+  });
   removeHoverHighlight();
-  hideBoxOverlay();
+  editZones.forEach(hideBoxOverlay);
 }
 
-function hideBoxOverlay() {
-  if (!editBoxOverlay) return;
-  editBoxOverlay.classList.add("hidden");
-  editBoxOverlay.style.cssText = "";
+function hideBoxOverlay(zone) {
+  if (!zone.overlay) return;
+  zone.overlay.classList.add("hidden");
+  zone.overlay.style.cssText = "";
 }
 
-function updateBoxOverlay(clientX1, clientY1, clientX2, clientY2) {
-  if (!editBoxOverlay || !panVectorized) return;
-  const rect = panVectorized.getBoundingClientRect();
-  const left = Math.min(clientX1, clientX2) - rect.left;
-  const top = Math.min(clientY1, clientY2) - rect.top;
-  const width = Math.abs(clientX2 - clientX1);
-  const height = Math.abs(clientY2 - clientY1);
-  editBoxOverlay.classList.remove("hidden", "erase", "paint");
-  editBoxOverlay.classList.add(isEraseTool() ? "erase" : "paint");
-  editBoxOverlay.style.left = `${left}px`;
-  editBoxOverlay.style.top = `${top}px`;
-  editBoxOverlay.style.width = `${width}px`;
-  editBoxOverlay.style.height = `${height}px`;
+function updateBoxOverlay(zone, clientX1, clientY1, clientX2, clientY2) {
+  if (!zone.overlay) {
+    zone.overlay = document.createElement("div");
+    zone.overlay.className = "edit-box-overlay hidden";
+    zone.overlay.setAttribute("aria-hidden", "true");
+    zone.container.appendChild(zone.overlay);
+  }
+  const rect = zone.container.getBoundingClientRect();
+  const o = zone.overlay;
+  o.classList.remove("hidden", "erase", "paint");
+  o.classList.add(isEraseTool() ? "erase" : "paint");
+  o.style.left = `${Math.min(clientX1, clientX2) - rect.left}px`;
+  o.style.top = `${Math.min(clientY1, clientY2) - rect.top}px`;
+  o.style.width = `${Math.abs(clientX2 - clientX1)}px`;
+  o.style.height = `${Math.abs(clientY2 - clientY1)}px`;
 }
 
-function performClickEdit(target) {
+function performClickEdit(zone, x, y) {
+  removeHoverHighlight();
+  const el = toPrimaryDrawable(drawableNear(zone, x, y), zone.svg());
+  if (!el) {
+    flashEditHint("No shape here. Click directly on a traced shape.");
+    return;
+  }
   if (isEyedropperTool()) {
-    const el = resolveDrawable(target);
-    if (!el) return;
     const color = getElementFillColor(el);
     if (color) setPaintColor(color);
     return;
   }
-  const el = resolveDrawable(target);
-  if (!el) return;
   pushUndo();
   if (state.editTools.mode === "clickErase") {
     el.remove();
@@ -1177,17 +1297,24 @@ function performClickEdit(target) {
   afterSvgEdit();
 }
 
-function performBoxEdit(clientX1, clientY1, clientX2, clientY2) {
-  const svg = getPrimarySvg();
+function performBoxEdit(zone, clientX1, clientY1, clientX2, clientY2) {
+  removeHoverHighlight();
+  const svg = zone.svg();
   if (!svg) return;
-  const targets = pathsInBox(svg, clientX1, clientY1, clientX2, clientY2);
-  if (!targets.length) return;
+  const targets = pathsInBox(svg, clientX1, clientY1, clientX2, clientY2)
+    .map(el => toPrimaryDrawable(el, svg))
+    .filter(Boolean);
+  if (!targets.length) {
+    flashEditHint("No shapes touch that box.");
+    return;
+  }
   pushUndo();
   if (isEraseTool()) {
     targets.forEach(el => el.remove());
   } else {
     targets.forEach(el => paintElement(el, state.editTools.paintColor));
   }
+  flashEditHint(`${isEraseTool() ? "Erased" : "Painted"} ${targets.length} shape${targets.length === 1 ? "" : "s"}.`);
   afterSvgEdit();
 }
 
@@ -1199,27 +1326,33 @@ function initSvgEditTools() {
     });
   });
 
-  btnRemoveSpeckles?.addEventListener("click", () => {
-    const threshold = parseInt(editSpeckle?.value || "4", 10);
-    removeSpeckles(threshold);
+  // Live while dragging; the split view, palette and print preview catch up on release.
+  editSpeckle?.addEventListener("input", () => {
+    applySpeckleThreshold(parseInt(editSpeckle.value, 10));
+  });
+  editSpeckle?.addEventListener("change", () => {
+    if (speckleSession) afterSvgEdit();
   });
 
   btnEditUndo?.addEventListener("click", undoEdit);
   btnEditRedo?.addEventListener("click", redoEdit);
 
-  if (!panVectorized) return;
+  editZones.forEach(zone => initEditZone(zone));
+}
 
+function initEditZone(zone) {
+  const { container } = zone;
   let boxDragging = false;
   let boxStart = null;
 
-  panVectorized.addEventListener("pointerdown", e => {
-    if (!isEditToolActive() || !getPrimarySvg()) return;
+  container.addEventListener("pointerdown", e => {
+    if (!isEditToolActive() || !zone.svg()) return;
     if (e.button !== 0) return;
 
     if (isClickEditTool()) {
       e.stopPropagation();
       e.preventDefault();
-      performClickEdit(e.target);
+      performClickEdit(zone, e.clientX, e.clientY);
       return;
     }
 
@@ -1228,51 +1361,48 @@ function initSvgEditTools() {
       e.preventDefault();
       boxDragging = true;
       boxStart = { x: e.clientX, y: e.clientY };
-      panVectorized.setPointerCapture(e.pointerId);
-      updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
+      container.setPointerCapture(e.pointerId);
+      updateBoxOverlay(zone, e.clientX, e.clientY, e.clientX, e.clientY);
     }
   });
 
-  panVectorized.addEventListener("pointermove", e => {
+  container.addEventListener("pointermove", e => {
     if (!boxDragging || !boxStart) return;
-    updateBoxOverlay(boxStart.x, boxStart.y, e.clientX, e.clientY);
+    updateBoxOverlay(zone, boxStart.x, boxStart.y, e.clientX, e.clientY);
   });
 
-  panVectorized.addEventListener("pointerup", e => {
+  container.addEventListener("pointerup", e => {
     if (!boxDragging) return;
     boxDragging = false;
-    hideBoxOverlay();
+    hideBoxOverlay(zone);
     if (boxStart) {
       if (Math.abs(e.clientX - boxStart.x) >= 4 || Math.abs(e.clientY - boxStart.y) >= 4) {
-        performBoxEdit(boxStart.x, boxStart.y, e.clientX, e.clientY);
+        performBoxEdit(zone, boxStart.x, boxStart.y, e.clientX, e.clientY);
       }
     }
     boxStart = null;
-    if (panVectorized.hasPointerCapture(e.pointerId)) {
-      panVectorized.releasePointerCapture(e.pointerId);
+    if (container.hasPointerCapture(e.pointerId)) {
+      container.releasePointerCapture(e.pointerId);
     }
   });
 
-  panVectorized.addEventListener("pointercancel", e => {
+  container.addEventListener("pointercancel", e => {
     boxDragging = false;
     boxStart = null;
-    hideBoxOverlay();
-    if (panVectorized.hasPointerCapture(e.pointerId)) {
-      panVectorized.releasePointerCapture(e.pointerId);
+    hideBoxOverlay(zone);
+    if (container.hasPointerCapture(e.pointerId)) {
+      container.releasePointerCapture(e.pointerId);
     }
   });
 
-  panVectorized.addEventListener("mousemove", e => {
-    if (!isClickEditTool()) {
-      removeHoverHighlight();
-      return;
-    }
-    const el = resolveDrawable(e.target);
+  container.addEventListener("mousemove", e => {
     removeHoverHighlight();
+    if (!isClickEditTool()) return;
+    const el = drawableNear(zone, e.clientX, e.clientY);
     if (el) el.classList.add("edit-hover-target");
   });
 
-  panVectorized.addEventListener("mouseleave", removeHoverHighlight);
+  container.addEventListener("mouseleave", removeHoverHighlight);
 }
 
 // ── Colors panel ──────────────────────────────────────────────
@@ -1839,6 +1969,7 @@ function setupSplitZoomPan(container) {
 
   container.addEventListener("mousedown", e => {
     if (e.target.classList.contains("split-label")) return;
+    if (isEditToolActive() && e.target.closest?.("#split-half-right")) return;
     dragging = true;
     startX = e.clientX - tx;
     startY = e.clientY - ty;

@@ -361,7 +361,7 @@
               <button class="btn btn-ghost btn-sm" id="btn-edit-redo" disabled title="Redo">Redo</button>
             </div>
           </div>
-          <p class="hint-text quick-edit-hint" id="quick-edit-hint">Touch up the traced shapes on the Vectorized tab. Re-tracing discards these edits.</p>
+          <p class="hint-text quick-edit-hint" id="quick-edit-hint" aria-live="polite">Touch up the traced shapes on the Vectorized or Side by Side tab. Re-tracing discards these edits.</p>
           <div class="edit-tool-grid" id="edit-tool-grid" role="group" aria-label="Edit tools">
             <button type="button" class="edit-tool-btn active" data-edit-tool="pan" title="Pan and zoom">Pan</button>
             <button type="button" class="edit-tool-btn" data-edit-tool="clickErase" title="Click a shape to remove it">Click erase</button>
@@ -384,10 +384,10 @@
             </div>
           </div>
           <div class="control-row">
-            <label for="edit-speckle">Remove speckles</label>
+            <label for="edit-speckle" title="Hide shapes smaller than this many screen pixels. Drag back to restore them.">Remove specks</label>
             <div class="slider-group">
-              <input type="range" id="edit-speckle" min="1" max="20" step="1" value="4" disabled />
-              <button type="button" class="btn btn-ghost btn-sm" id="btn-remove-speckles" disabled>Clean</button>
+              <input type="range" id="edit-speckle" min="0" max="30" step="1" value="0" disabled />
+              <output for="edit-speckle" id="edit-speckle-val">Off</output>
             </div>
           </div>
         </section>

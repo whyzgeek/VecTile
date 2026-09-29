@@ -703,9 +703,9 @@ html, body {
   color: var(--accent);
   font-weight: 600;
 }
-#pan-vectorized.edit-mode-click,
-#pan-vectorized.edit-mode-eyedropper { cursor: crosshair; }
-#pan-vectorized.edit-mode-box { cursor: crosshair; touch-action: none; }
+.edit-mode-click,
+.edit-mode-eyedropper { cursor: crosshair; }
+.edit-mode-box { cursor: crosshair; touch-action: none; }
 .edit-box-overlay {
   position: absolute;
   pointer-events: none;
@@ -716,10 +716,15 @@ html, body {
 .edit-box-overlay.erase { border-color: #e53935; background: rgba(229, 57, 53, 0.12); }
 .edit-box-overlay.paint { border-color: #1e88e5; background: rgba(30, 136, 229, 0.12); }
 
-#svg-container svg .edit-hover-target {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+/* CSS outline isn't painted on SVG shapes; highlight with a screen-width stroke. */
+.edit-hover-target {
+  stroke: #1e88e5 !important;
+  stroke-width: 3px !important;
+  vector-effect: non-scaling-stroke;
+  paint-order: stroke;
 }
+.edit-mode-erase .edit-hover-target { stroke: #e53935 !important; }
+.quick-edit-hint.flash { color: var(--accent); font-style: normal; }
 
 .palette-header {
   display: flex;
