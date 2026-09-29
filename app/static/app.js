@@ -15,19 +15,18 @@ const state = {
   currentDpi: 200,
   engine: "vtracer",
   params: {},
-  quantizeColors: 0,
+  colorCount: 0,        // 0 = trace all colors; N = snap to N colors editable in the Colors panel
+  colorLayers: [],      // [{color, pct, enabled, output, mergeInto}] for the current colorLayersKey
+  colorLayersKey: null, // image/page/count the layers were analyzed for
+  colorBackground: null,
+  colorEditorOpen: null, // color key whose inline editor is expanded
   resizePreview: true,
   currentSvg: null,
   engines: {},         // id -> engine descriptor
   presets: [],
-  hiddenColors: new Set(),
-  recoloredColors: {},  // originalHex -> newHex
-  paletteRecolorSource: null,  // original palette key being recolored via paint picker
-  backgroundEditActive: false,
   editTools: { mode: "pan", paintColor: "#000000" },
   paintRecentColors: [],
   paintPickerHsl: { h: 0, s: 0, l: 0 },
-  backgroundColor: "#ffffff",
   undoStack: [],
   redoStack: [],
   originalTraceSvg: null,
@@ -96,8 +95,6 @@ const engineTabs     = document.getElementById("engine-tabs");
 const engineDesc     = document.getElementById("engine-desc");
 const paramControls  = document.getElementById("param-controls");
 const resizeCheckbox = document.getElementById("resize-preview");
-const quantizeSlider = document.getElementById("quantize-colors");
-const quantizeVal    = document.getElementById("quantize-colors-val");
 const btnDownload    = document.getElementById("btn-download");
 const btnReset       = document.getElementById("btn-reset");
 const previewArea    = document.getElementById("preview-area");
@@ -111,9 +108,13 @@ const statusDim      = document.getElementById("status-dimensions");
 const statusSize     = document.getElementById("status-size");
 const statusTime     = document.getElementById("status-time");
 const statusPaths    = document.getElementById("status-paths");
-const paletteGrid    = document.getElementById("palette-grid");
-const palettePlaceholder = document.getElementById("palette-placeholder");
-const btnResetPalette = document.getElementById("btn-reset-palette");
+const colorsSection  = document.getElementById("colors-section");
+const colorCountRow  = document.getElementById("color-count-row");
+const colorCountSlider = document.getElementById("color-count");
+const colorCountVal  = document.getElementById("color-count-val");
+const colorsHint     = document.getElementById("colors-hint");
+const colorList      = document.getElementById("color-list");
+const btnResetColors = document.getElementById("btn-reset-colors");
 const panVectorized   = document.getElementById("pan-vectorized");
 const editBoxOverlay  = document.getElementById("edit-box-overlay");
 const quickEditSection = document.getElementById("quick-edit-section");
@@ -123,7 +124,7 @@ const editPaintSl      = document.getElementById("edit-paint-sl");
 const editPaintSlCursor = document.getElementById("edit-paint-sl-cursor");
 const editPaintHue     = document.getElementById("edit-paint-hue");
 const editPaintRecent  = document.getElementById("edit-paint-recent");
-const btnEditBg         = document.getElementById("btn-edit-bg");
+const editPaintPanel   = document.getElementById("edit-paint-panel");
 const editSpeckle     = document.getElementById("edit-speckle");
 const btnRemoveSpeckles = document.getElementById("btn-remove-speckles");
 const btnEditUndo     = document.getElementById("btn-edit-undo");
@@ -170,15 +171,7 @@ const paintColorPicker = {
   });
   updateEngineDesc();
 
-  // Build preset options
-  presetsRes.forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.label;
-    presetSelect.appendChild(opt);
-  });
-
-  // Apply default engine params
+  // Apply default engine params (also builds the engine's preset list)
   setEngine(state.engine, false);
 })();
 
@@ -217,13 +210,11 @@ async function handleFile(file) {
   state.pageCount = data.page_count || 1;
   state.currentPage = 0;
   state.currentDpi = 200;
-  state.hiddenColors.clear();
-  state.recoloredColors = {};
   resetEditHistory();
   state.originalTraceSvg = null;
-  state.backgroundColor = "#ffffff";
-  finishBackgroundEdit(false);
-  finishPaletteRecolor(false);
+  state.colorLayers = [];
+  state.colorLayersKey = null;
+  state.colorEditorOpen = null;
   // Each new upload re-enables poster auto-fit
   state.printSettings.posterAutoFit = true;
 
@@ -233,9 +224,7 @@ async function handleFile(file) {
     state.currentSvg = data.svg;
     state.originalTraceSvg = data.svg;
     resetEditHistory();
-    state.backgroundColor = "#ffffff";
     renderSvg(data.svg, { showTab: "vectorized" });
-    buildPalettePanel(data.palette);
     btnDownload.disabled = false;
     originalImg.removeAttribute("src");
     splitOrigImg.removeAttribute("src");
@@ -261,6 +250,9 @@ async function handleFile(file) {
   } else {
     pdfSection.style.display = "none";
   }
+
+  updateColorsVisibility();
+  renderColorsPanel();
 
   // Reveal the preview area now that we have content
   previewArea.classList.add("has-image");
@@ -303,13 +295,57 @@ async function rerenderPdf() {
 // ── Engine & params ───────────────────────────────────────────
 function setEngine(id, retrace = true) {
   state.engine = id;
-  document.querySelectorAll(".engine-tab").forEach(btn => {
+  engineTabs.querySelectorAll(".engine-tab").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.engine === id);
   });
   updateEngineDesc();
+  buildPresetOptions();
   buildParamControls();
-  presetSelect.value = "";
   if (retrace) scheduleVectorize();
+}
+
+// Only list presets that belong to the active engine.
+function buildPresetOptions() {
+  presetSelect.innerHTML = "";
+  const custom = document.createElement("option");
+  custom.value = "";
+  custom.textContent = "— Custom —";
+  presetSelect.appendChild(custom);
+  state.presets
+    .filter(p => p.engine === state.engine)
+    .forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      presetSelect.appendChild(opt);
+    });
+  presetSelect.value = "";
+}
+
+// A `visible_when` map ({param: [values]}) matches when every listed param
+// currently holds one of its allowed values. Null/undefined always matches.
+function conditionMet(cond) {
+  if (!cond) return true;
+  return Object.entries(cond).every(([name, values]) => values.includes(state.params[name]));
+}
+
+// Hide controls that have no effect under the current engine + settings.
+// Hidden params keep their values so they come back unchanged.
+function updateParamVisibility() {
+  const e = state.engines[state.engine];
+  if (!e) return;
+  e.param_schema.forEach(p => {
+    const row = paramControls.querySelector(`.param-row[data-param="${p.name}"]`);
+    if (row) row.classList.toggle("hidden", !conditionMet(p.visible_when));
+  });
+  updateColorsVisibility();
+}
+
+// Whether the engine traces in color right now (VTracer in Color mode).
+// B&W output makes per-color editing meaningless.
+function colorsApply() {
+  const e = state.engines[state.engine];
+  return !!e && e.supports_quantize !== false && conditionMet(e.quantize_visible_when);
 }
 
 function updateEngineDesc() {
@@ -326,6 +362,7 @@ function buildParamControls(overrideParams = null) {
   e.param_schema.forEach(p => {
     const row = document.createElement("div");
     row.className = "param-row";
+    row.dataset.param = p.name;
 
     const label = document.createElement("label");
     label.textContent = p.label;
@@ -355,7 +392,7 @@ function buildParamControls(overrideParams = null) {
         input.appendChild(o);
       });
       input.value = params[p.name] !== undefined ? params[p.name] : p.default;
-      input.addEventListener("change", () => { collectParams(); scheduleVectorize(); });
+      input.addEventListener("change", () => { collectParams(); updateParamVisibility(); scheduleVectorize(); });
       row.append(label, input);
     } else if (p.type === "bool") {
       input = document.createElement("input");
@@ -369,6 +406,7 @@ function buildParamControls(overrideParams = null) {
   });
 
   collectParams();
+  updateParamVisibility();
 }
 
 function collectParams() {
@@ -376,19 +414,12 @@ function collectParams() {
   if (!e) return;
   const params = {};
   e.param_schema.forEach(p => {
-    const inputs = paramControls.querySelectorAll("input, select");
-    // find matching by position
-    const rows = paramControls.querySelectorAll(".param-row");
-    rows.forEach(row => {
-      const lbl = row.querySelector("label");
-      if (!lbl || lbl.textContent !== p.label) return;
-      const el = row.querySelector("input, select");
-      if (!el) return;
-      if (p.type === "int") params[p.name] = parseInt(el.value);
-      else if (p.type === "float") params[p.name] = parseFloat(el.value);
-      else if (p.type === "bool") params[p.name] = el.checked;
-      else params[p.name] = el.value;
-    });
+    const el = paramControls.querySelector(`.param-row[data-param="${p.name}"] input, .param-row[data-param="${p.name}"] select`);
+    if (!el) return;
+    if (p.type === "int") params[p.name] = parseInt(el.value);
+    else if (p.type === "float") params[p.name] = parseFloat(el.value);
+    else if (p.type === "bool") params[p.name] = el.checked;
+    else params[p.name] = el.value;
   });
   state.params = params;
 }
@@ -399,16 +430,12 @@ presetSelect.addEventListener("change", () => {
   if (!preset) return;
   // Switch engine if needed (rebuild tabs first)
   if (preset.engine !== state.engine) {
-    state.engine = preset.engine;
-    document.querySelectorAll(".engine-tab").forEach(btn => {
-      btn.classList.toggle("active", btn.dataset.engine === state.engine);
-    });
-    updateEngineDesc();
+    const presetId = preset.id;
+    setEngine(preset.engine, false);
+    presetSelect.value = presetId;
   }
   buildParamControls(preset.params);
-  state.quantizeColors = preset.quantize_colors || 0;
-  quantizeSlider.value = state.quantizeColors;
-  quantizeVal.textContent = state.quantizeColors >= 2 ? state.quantizeColors : "Off";
+  setColorCount(preset.quantize_colors || 0);
   state.resizePreview = preset.resize_preview !== false;
   resizeCheckbox.checked = state.resizePreview;
   scheduleVectorize();
@@ -419,18 +446,11 @@ resizeCheckbox.addEventListener("change", () => {
   state.resizePreview = resizeCheckbox.checked;
   scheduleVectorize();
 });
-quantizeSlider.addEventListener("input", () => {
-  const v = parseInt(quantizeSlider.value);
-  quantizeVal.textContent = v >= 2 ? v : "Off";
-});
-quantizeSlider.addEventListener("change", () => {
-  state.quantizeColors = parseInt(quantizeSlider.value);
-  scheduleVectorize();
-});
 
 // ── Vectorize ─────────────────────────────────────────────────
 function scheduleVectorize() {
-  if (!state.imageId) return;
+  // Uploaded SVGs are edited directly; their session raster is only a placeholder.
+  if (!state.imageId || state.kind === "svg") return;
   tracingDebouncePending = true;
   updateTracingOverlay();
   clearTimeout(debounceTimer);
@@ -447,11 +467,12 @@ async function runVectorize() {
   beginTracing();
 
   try {
+    await ensureColorLayers(abortController.signal);
     const body = {
       image_id: state.imageId,
       engine: state.engine,
       params: state.params,
-      quantize_colors: state.quantizeColors,
+      color_layers: traceColorLayers(),
       resize_preview: state.resizePreview,
     };
 
@@ -463,21 +484,24 @@ async function runVectorize() {
     });
 
     if (!res.ok) {
+      // 409 = a newer trace replaced this one on the server; nothing to report.
+      if (res.status === 409) return;
       const err = await res.json().catch(() => ({ detail: "Trace failed" }));
       console.error("Vectorize error:", err.detail);
+      statusTime.textContent = "Trace failed";
+      statusTime.title = err.detail || "";
+      alert(err.detail || "Trace failed");
       return;
     }
 
     const data = await res.json();
+    statusTime.title = "";
     state.currentSvg = data.svg;
     state.originalTraceSvg = data.svg;
-    state.hiddenColors.clear();
-    state.recoloredColors = {};
     resetEditHistory();
-    state.backgroundColor = "#ffffff";
 
     renderSvg(data.svg);
-    buildPalettePanel(data.palette);
+    renderColorsPanel();
     updateStatusBar(data);
     btnDownload.disabled = false;
   } catch (err) {
@@ -637,7 +661,6 @@ function fitSplitMediaToHalves() {
 }
 
 function renderSvg(svgStr, { showTab } = {}) {
-  finishBackgroundEdit(false);
   svgContainer.innerHTML = svgStr;
   splitSvgDiv.innerHTML = svgStr;
   resetVectorizedWrapperStyles();
@@ -645,7 +668,7 @@ function renderSvg(svgStr, { showTab } = {}) {
   preparePreviewSvg(splitSvgDiv.querySelector("svg"));
   showPane(showTab ?? getCurrentTab());
   schedulePreviewFit();
-  syncBackgroundFromSvg();
+  setQuickEditEnabled(true);
   if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
 }
 
@@ -830,7 +853,7 @@ function renderPickerRecent(picker) {
   });
 }
 
-function setPickerColor(picker, hex, { addRecent = true, skipPickerRouting = false } = {}) {
+function setPickerColor(picker, hex, { addRecent = true } = {}) {
   const normalized = normalizeColorToHex(hex);
   if (!normalized) return;
   const rgb = hexToRgb(normalized);
@@ -848,13 +871,6 @@ function setPickerColor(picker, hex, { addRecent = true, skipPickerRouting = fal
       ...picker.getRecent().filter(c => c !== normalized),
     ].slice(0, MAX_PAINT_RECENT));
     renderPickerRecent(picker);
-  }
-  if (!skipPickerRouting && picker === paintColorPicker) {
-    if (state.backgroundEditActive) {
-      previewBackgroundColor(normalized);
-    } else if (state.paletteRecolorSource) {
-      recolorPaths(state.paletteRecolorSource, normalized);
-    }
   }
 }
 
@@ -876,58 +892,9 @@ function setPaintColor(hex, opts) {
   setPickerColor(paintColorPicker, hex, opts);
 }
 
-function updateBackgroundSwatchDisplay(hex) {
-  const normalized = normalizeColorToHex(hex);
-  if (!normalized) return;
-  state.backgroundColor = normalized;
-  if (btnEditBg) btnEditBg.style.background = normalized;
-}
-
-function syncBackgroundFromSvg() {
-  const bg = getPrimarySvg()?.querySelector(`#${VECTILE_BG_ID}`);
-  if (bg) {
-    const hex = getElementFillColor(bg);
-    if (hex) updateBackgroundSwatchDisplay(hex);
-  } else {
-    updateBackgroundSwatchDisplay(state.backgroundColor);
-  }
-}
-
-function updateQuickEditHint() {
-  const el = document.getElementById("quick-edit-hint");
-  if (!el) return;
-  el.textContent = state.backgroundEditActive
-    ? "Adjust the paint color above to set background. Click the swatch again to finish."
-    : "Edit on the Vectorized tab canvas.";
-}
-
-function finishBackgroundEdit(sync = true) {
-  if (!state.backgroundEditActive) return;
-  state.backgroundEditActive = false;
-  btnEditBg?.classList.remove("recolor-active");
-  updateQuickEditHint();
-  if (sync) afterSvgEdit();
-}
-
-function startBackgroundEdit() {
-  if (state.backgroundEditActive) {
-    finishBackgroundEdit();
-    return;
-  }
-  finishPaletteRecolor(false);
-  pushUndo();
-  state.backgroundEditActive = true;
-  const bg = getPrimarySvg()?.querySelector(`#${VECTILE_BG_ID}`);
-  const current = bg ? getElementFillColor(bg) : state.backgroundColor;
-  setPaintColor(current || "#ffffff", { addRecent: false, skipPickerRouting: true });
-  btnEditBg?.classList.add("recolor-active");
-  updateQuickEditHint();
-}
-
 function initPaintColorPicker() {
   initColorPicker(paintColorPicker);
   renderPickerRecent(paintColorPicker);
-  updateBackgroundSwatchDisplay(state.backgroundColor);
 }
 
 function initColorPicker(picker) {
@@ -1032,7 +999,7 @@ function queryEditToolButtons() {
 }
 
 function setQuickEditEnabled(enabled) {
-  const ctrls = [btnEditBg, editSpeckle, btnRemoveSpeckles];
+  const ctrls = [editSpeckle, btnRemoveSpeckles];
   ctrls.forEach(el => { if (el) el.disabled = !enabled; });
   setPickerEnabled(paintColorPicker, enabled);
   queryEditToolButtons().forEach(btn => {
@@ -1054,9 +1021,7 @@ function pushUndo() {
 
 function restoreSvgSnapshot(svgStr) {
   renderSvg(svgStr);
-  state.hiddenColors.clear();
-  state.recoloredColors = {};
-  buildPalettePanel(extractPaletteFromCurrentSvg());
+  if (state.kind === "svg") renderColorsPanel();
   if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
 }
 
@@ -1078,8 +1043,7 @@ function redoEdit() {
 
 function afterSvgEdit() {
   syncSplitSvgFromPrimary();
-  const palette = extractPaletteFromCurrentSvg();
-  buildPalettePanel(palette);
+  if (state.kind === "svg") renderColorsPanel();
   updateStatusBarFromDom();
   if (typeof window.__onSvgRendered === "function") window.__onSvgRendered();
 }
@@ -1120,38 +1084,6 @@ function paintElement(el, color) {
     el.setAttribute("stroke", color);
     el.style.stroke = color;
   }
-}
-
-function updateBackgroundRect(color) {
-  const fill = normalizeColorToHex(color);
-  if (!fill) return false;
-  const svgs = [
-    svgContainer.querySelector("svg"),
-    splitSvgDiv.querySelector("svg"),
-  ].filter(Boolean);
-  if (!svgs.length) return false;
-  const dims = getSourceSvgDims();
-  const w = dims?.w || 1000;
-  const h = dims?.h || 1000;
-  svgs.forEach(svg => {
-    let bg = svg.querySelector(`#${VECTILE_BG_ID}`);
-    if (!bg) {
-      bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      bg.id = VECTILE_BG_ID;
-      bg.setAttribute("x", "0");
-      bg.setAttribute("y", "0");
-      bg.setAttribute("width", String(w));
-      bg.setAttribute("height", String(h));
-      svg.insertBefore(bg, svg.firstChild);
-    }
-    bg.setAttribute("fill", fill);
-  });
-  return true;
-}
-
-function previewBackgroundColor(color) {
-  if (!updateBackgroundRect(color)) return;
-  updateBackgroundSwatchDisplay(color);
 }
 
 function removeSpeckles(thresholdPx) {
@@ -1267,11 +1199,6 @@ function initSvgEditTools() {
     });
   });
 
-  btnEditBg?.addEventListener("click", () => {
-    if (btnEditBg.disabled) return;
-    startBackgroundEdit();
-  });
-
   btnRemoveSpeckles?.addEventListener("click", () => {
     const threshold = parseInt(editSpeckle?.value || "4", 10);
     removeSpeckles(threshold);
@@ -1348,207 +1275,412 @@ function initSvgEditTools() {
   panVectorized.addEventListener("mouseleave", removeHoverHighlight);
 }
 
-// ── Palette panel ─────────────────────────────────────────────
-function paletteFillMatchers(originalColor) {
-  const display = state.recoloredColors[originalColor] || originalColor;
-  return new Set([
-    originalColor,
-    originalColor.toUpperCase(),
-    display,
-    display.toUpperCase(),
-  ]);
+// ── Colors panel ──────────────────────────────────────────────
+// Raster input: colors are chosen BEFORE tracing. The source is snapped to N
+// dominant colors; each can be turned off (left out of the trace), merged into
+// another color (one region, cleaner contours) or recolored. Any change
+// re-traces. Uploaded SVGs can't be re-traced, so there the same rows edit the
+// SVG's fills directly.
+
+const EYE_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.6 5-1.4"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+
+function isSvgInput() {
+  return state.kind === "svg";
 }
 
-function forEachPathWithPaletteColor(svg, originalColor, fn) {
-  const matchers = paletteFillMatchers(originalColor);
+function colorLayersKey() {
+  return [state.imageId, state.currentPage, state.currentDpi, state.colorCount].join("|");
+}
+
+function setColorCount(n) {
+  state.colorCount = n >= 2 ? n : 0;
+  colorCountSlider.value = state.colorCount || 1;
+  colorCountVal.textContent = state.colorCount || "All";
+}
+
+// Load the color analysis for the current image/page/count if it's stale.
+// Called from runVectorize, so every trace path picks up fresh layers.
+async function ensureColorLayers(signal) {
+  if (isSvgInput() || !colorsApply() || !state.colorCount) return;
+  const key = colorLayersKey();
+  if (state.colorLayersKey === key) return;
+  state.colorLayers = [];
+  state.colorLayersKey = null;
+  state.colorEditorOpen = null;
+  renderColorsPanel({ loading: true });
+  const res = await fetch("/api/colors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      image_id: state.imageId,
+      n_colors: state.colorCount,
+      resize_preview: state.resizePreview,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    renderColorsPanel();
+    return;
+  }
+  const data = await res.json();
+  state.colorBackground = data.background;
+  state.colorLayers = data.colors.map(c => ({
+    color: c.color, pct: c.pct, enabled: true, output: null, mergeInto: null,
+  }));
+  state.colorLayersKey = key;
+  renderColorsPanel();
+}
+
+function findLayer(color) {
+  return state.colorLayers.find(l => l.color === color);
+}
+
+// What the tracer should do with a layer, after following a merge.
+function resolveLayer(layer) {
+  const target = layer.mergeInto ? findLayer(layer.mergeInto) : null;
+  const src = target || layer;
+  return { output: src.output || src.color, enabled: src.enabled };
+}
+
+function traceColorLayers() {
+  if (isSvgInput() || !colorsApply() || !state.colorCount || !state.colorLayers.length) return null;
+  return state.colorLayers.map(l => ({ color: l.color, ...resolveLayer(l) }));
+}
+
+function layerIsEdited(l) {
+  return !l.enabled || !!l.output || !!l.mergeInto;
+}
+
+// ── SVG-input mode: rows are the SVG's own fills ──
+function svgFillElements(hex) {
+  return [svgContainer.querySelector("svg"), splitSvgDiv.querySelector("svg")]
+    .filter(Boolean)
+    .flatMap(svg => [...svg.querySelectorAll("[fill]")]
+      .filter(el => (el.getAttribute("fill") || "").toLowerCase() === hex));
+}
+
+function svgColorRows() {
+  const svg = getPrimarySvg();
+  if (!svg) return [];
+  const rows = {};
   svg.querySelectorAll("[fill]").forEach(el => {
-    const fill = el.getAttribute("fill");
-    if (fill && matchers.has(fill)) fn(el);
+    const c = (el.getAttribute("fill") || "").toLowerCase();
+    if (!c.startsWith("#")) return;
+    rows[c] ||= { color: c, count: 0, visible: 0 };
+    rows[c].count++;
+    if (el.style.display !== "none") rows[c].visible++;
   });
+  return Object.values(rows).sort((a, b) => b.count - a.count);
 }
 
-function updatePaletteSwatchDisplay(originalColor, displayColor) {
-  const card = paletteGrid.querySelector(`[data-color="${originalColor}"]`);
-  if (!card) return;
-  const sw = card.querySelector(".swatch-color");
-  const dot = card.querySelector(".swatch-picker");
-  if (sw) sw.style.background = displayColor;
-  if (dot) dot.style.background = displayColor;
-}
-
-function updatePaletteHint() {
-  const el = document.getElementById("palette-hint");
-  if (!el) return;
-  el.textContent = state.paletteRecolorSource
-    ? "Adjust the paint color above to recolor this layer. Click the ring again to finish."
-    : "Click swatch to hide. Click ring to recolor with the paint picker above.";
-}
-
-function finishPaletteRecolor(sync = true) {
-  if (!state.paletteRecolorSource) return;
-  state.paletteRecolorSource = null;
-  paletteGrid?.querySelectorAll(".recolor-active").forEach(c => {
-    c.classList.remove("recolor-active");
-  });
-  updatePaletteHint();
-  if (sync) afterSvgEdit();
-}
-
-function startPaletteRecolor(originalColor) {
-  if (state.paletteRecolorSource === originalColor) {
-    finishPaletteRecolor();
+// ── Actions ──
+function toggleColor(color) {
+  if (isSvgInput()) {
+    const els = svgFillElements(color);
+    if (!els.length) return;
+    pushUndo();
+    const hide = els.some(el => el.style.display !== "none");
+    els.forEach(el => { el.style.display = hide ? "none" : ""; });
+    afterSvgEdit();
     return;
   }
-  finishBackgroundEdit(false);
-  if (state.paletteRecolorSource) finishPaletteRecolor(false);
-  pushUndo();
-  state.paletteRecolorSource = originalColor;
-  const display = state.recoloredColors[originalColor] || originalColor;
-  setPaintColor(display, { addRecent: false, skipPickerRouting: true });
-  paletteGrid.querySelectorAll(".swatch-card").forEach(c => {
-    c.classList.toggle("recolor-active", c.dataset.color === originalColor);
-  });
-  updatePaletteHint();
+  const layer = findLayer(color);
+  if (!layer || layer.mergeInto) return;
+  layer.enabled = !layer.enabled;
+  renderColorsPanel();
+  scheduleVectorize();
 }
 
-function buildPalettePanel(palette) {
-  paletteGrid.innerHTML = "";
-  btnResetPalette.disabled = false;
-  setQuickEditEnabled(!!getPrimarySvg() || !!state.currentSvg);
-
-  if (!palette || palette.length === 0) {
-    palettePlaceholder.style.display = "";
-    palettePlaceholder.querySelector("p").textContent = "No colors found in SVG";
+function mergeColor(color, targetColor) {
+  if (isSvgInput()) {
+    recolorColor(color, targetColor);
     return;
   }
-  palettePlaceholder.style.display = "none";
-
-  palette.forEach(({ color, count }) => {
-    const displayColor = state.recoloredColors[color] || color;
-    const card = document.createElement("div");
-    card.className = "swatch-card";
-    if (state.hiddenColors.has(color)) card.classList.add("hidden-color");
-    card.dataset.color = color;
-
-    const swatch = document.createElement("div");
-    swatch.className = "swatch-color";
-    swatch.style.background = displayColor;
-
-    const countEl = document.createElement("span");
-    countEl.className = "swatch-count";
-    countEl.textContent = count;
-
-    const pickerDot = document.createElement("div");
-    pickerDot.className = "swatch-picker";
-    pickerDot.style.background = displayColor;
-    pickerDot.title = "Recolor with paint picker";
-
-    const paintBtn = document.createElement("button");
-    paintBtn.type = "button";
-    paintBtn.className = "swatch-paint-btn";
-    paintBtn.title = "Set as paint color";
-    paintBtn.textContent = "\u25cf";
-    paintBtn.addEventListener("click", e => {
-      e.stopPropagation();
-      finishBackgroundEdit(false);
-      finishPaletteRecolor(false);
-      setPaintColor(displayColor);
-    });
-
-    pickerDot.addEventListener("click", e => {
-      e.stopPropagation();
-      startPaletteRecolor(color);
-    });
-
-    card.addEventListener("click", () => {
-      finishBackgroundEdit(false);
-      finishPaletteRecolor(false);
-      pushUndo();
-      toggleColorVisibility(color, card);
-      afterSvgEdit();
-    });
-    card.append(paintBtn, swatch, countEl, pickerDot);
-    paletteGrid.appendChild(card);
-  });
-
-  if (state.paletteRecolorSource) {
-    const active = paletteGrid.querySelector(
-      `[data-color="${state.paletteRecolorSource}"]`,
-    );
-    if (active) active.classList.add("recolor-active");
-  }
-  updatePaletteHint();
+  const layer = findLayer(color);
+  if (!layer || color === targetColor) return;
+  layer.mergeInto = targetColor;
+  layer.output = null;
+  layer.enabled = true;
+  // Anything merged into this color now follows the new target (no chains).
+  state.colorLayers.forEach(l => { if (l.mergeInto === color) l.mergeInto = targetColor; });
+  state.colorEditorOpen = null;
+  renderColorsPanel();
+  scheduleVectorize();
 }
 
-function toggleColorVisibility(originalColor, card) {
-  const svgs = [
-    svgContainer.querySelector("svg"),
-    splitSvgDiv.querySelector("svg"),
-  ].filter(Boolean);
-
-  if (state.hiddenColors.has(originalColor)) {
-    state.hiddenColors.delete(originalColor);
-    card.classList.remove("hidden-color");
-    svgs.forEach(svg => {
-      forEachPathWithPaletteColor(svg, originalColor, el => {
-        el.style.display = "";
-      });
-    });
-  } else {
-    state.hiddenColors.add(originalColor);
-    card.classList.add("hidden-color");
-    svgs.forEach(svg => {
-      forEachPathWithPaletteColor(svg, originalColor, el => {
-        el.style.display = "none";
-      });
-    });
-  }
-}
-
-function recolorPaths(originalColor, newColor) {
-  const normalized = normalizeColorToHex(newColor);
+function recolorColor(color, hex) {
+  const normalized = normalizeColorToHex(hex);
   if (!normalized) return;
-  const svgs = [
-    svgContainer.querySelector("svg"),
-    splitSvgDiv.querySelector("svg"),
-  ].filter(Boolean);
-
-  svgs.forEach(svg => {
-    forEachPathWithPaletteColor(svg, originalColor, el => {
-      el.setAttribute("fill", normalized);
-    });
-  });
-
-  state.recoloredColors[originalColor] = normalized;
-  updatePaletteSwatchDisplay(originalColor, normalized);
+  if (isSvgInput()) {
+    const els = svgFillElements(color);
+    if (!els.length || normalized === color) return;
+    pushUndo();
+    els.forEach(el => paintElement(el, normalized));
+    if (state.colorEditorOpen === color) state.colorEditorOpen = normalized;
+    afterSvgEdit();
+    return;
+  }
+  const layer = findLayer(color);
+  if (!layer) return;
+  layer.output = normalized === layer.color ? null : normalized;
+  layer.mergeInto = null;
+  renderColorsPanel();
+  scheduleVectorize();
 }
 
-btnResetPalette.addEventListener("click", () => {
-  finishBackgroundEdit(false);
-  finishPaletteRecolor(false);
-  state.hiddenColors.clear();
-  state.recoloredColors = {};
-  resetEditHistory();
-  setEditToolMode("pan");
-  if (state.originalTraceSvg || state.currentSvg) {
-    const src = state.originalTraceSvg || state.currentSvg;
-    renderSvg(src);
-    state.currentSvg = src;
-    buildPalettePanel(extractPaletteFromCurrentSvg());
+function restoreColor(color) {
+  const layer = findLayer(color);
+  if (!layer) return;
+  layer.output = null;
+  layer.mergeInto = null;
+  layer.enabled = true;
+  renderColorsPanel();
+  scheduleVectorize();
+}
+
+btnResetColors.addEventListener("click", () => {
+  state.colorEditorOpen = null;
+  if (isSvgInput()) {
+    if (!state.originalTraceSvg) return;
+    pushUndo();
+    renderSvg(state.originalTraceSvg);
+    afterSvgEdit();
+    return;
   }
+  state.colorLayers.forEach(l => { l.enabled = true; l.output = null; l.mergeInto = null; });
+  renderColorsPanel();
+  scheduleVectorize();
 });
 
-function extractPaletteFromCurrentSvg() {
-  const svg = svgContainer.querySelector("svg");
-  if (!svg) return [];
-  const counts = {};
-  svg.querySelectorAll("[fill]").forEach(el => {
-    const c = el.getAttribute("fill");
-    if (c && c.startsWith("#")) counts[c.toLowerCase()] = (counts[c.toLowerCase()] || 0) + 1;
+colorCountSlider.addEventListener("input", () => {
+  const v = parseInt(colorCountSlider.value);
+  colorCountVal.textContent = v >= 2 ? v : "All";
+});
+colorCountSlider.addEventListener("change", () => {
+  setColorCount(parseInt(colorCountSlider.value));
+  presetSelect.value = "";
+  if (!state.colorCount) {
+    state.colorLayers = [];
+    state.colorLayersKey = null;
+    state.colorEditorOpen = null;
+  }
+  renderColorsPanel({ loading: !!state.colorCount });
+  scheduleVectorize();
+});
+
+// ── Rendering ──
+// Colors section: shown for color tracing and for SVG input; hidden for B&W.
+// Paint tools follow the same rule: B&W output is a single ink color.
+function updateColorsVisibility() {
+  const show = isSvgInput() || colorsApply();
+  colorsSection.classList.toggle("hidden", !show);
+  colorCountRow.classList.toggle("hidden", isSvgInput());
+  editPaintPanel.classList.toggle("hidden", !show);
+  const paintTools = ["eyedropper", "clickPaint", "boxPaint"];
+  if (!show && paintTools.includes(state.editTools.mode)) setEditToolMode("pan");
+  renderColorsPanel();
+}
+
+function renderColorsPanel({ loading = false } = {}) {
+  colorList.innerHTML = "";
+  if (isSvgInput()) {
+    renderSvgColorRows();
+    return;
+  }
+  const hasImage = !!state.imageId;
+  btnResetColors.disabled = !state.colorLayers.some(layerIsEdited);
+
+  if (!hasImage) {
+    colorsHint.textContent = "Upload an image to pick the colors to trace.";
+    return;
+  }
+  if (!state.colorCount) {
+    colorsHint.textContent = "Tracing every color as-is. Choose a number of colors to turn colors off, merge similar shades, or change them before tracing.";
+    return;
+  }
+  if (loading || !state.colorLayers.length) {
+    colorsHint.textContent = "Finding colors…";
+    return;
+  }
+  colorsHint.textContent = "Eye: include or leave out of the trace. Swatch: merge into another color or recolor. Merging similar shades gives cleaner outlines.";
+
+  state.colorLayers.forEach(layer => {
+    const { output, enabled } = resolveLayer(layer);
+    const isBg = layer.color === state.colorBackground;
+    const target = layer.mergeInto ? findLayer(layer.mergeInto) : null;
+
+    const li = document.createElement("li");
+    li.className = "color-row";
+    li.classList.toggle("off", !enabled);
+    li.classList.toggle("merged", !!target);
+    li.classList.toggle("open", state.colorEditorOpen === layer.color);
+
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "color-eye";
+    eye.innerHTML = enabled ? EYE_ON : EYE_OFF;
+    eye.disabled = !!target;
+    eye.setAttribute("aria-pressed", String(enabled));
+    eye.title = target
+      ? "Merged: follows the color it was merged into"
+      : enabled
+        ? (isBg ? "Remove background (make it transparent)" : "Leave this color out of the trace")
+        : "Include this color in the trace";
+    eye.addEventListener("click", () => toggleColor(layer.color));
+
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "color-chip";
+    chip.style.background = output;
+    chip.title = "Merge or recolor";
+    chip.setAttribute("aria-expanded", String(state.colorEditorOpen === layer.color));
+    chip.addEventListener("click", () => {
+      state.colorEditorOpen = state.colorEditorOpen === layer.color ? null : layer.color;
+      renderColorsPanel();
+    });
+
+    const meta = document.createElement("div");
+    meta.className = "color-meta";
+    const name = document.createElement("span");
+    name.className = "color-name";
+    name.innerHTML = (isBg ? '<span class="tag">Background</span>' : "") + (target ? layer.color : output);
+    const sub = document.createElement("span");
+    sub.className = "color-sub";
+    if (target) {
+      sub.innerHTML = `merged into <span class="color-merge-dot" style="background:${resolveLayer(target).output}"></span>`;
+    } else if (!enabled) {
+      sub.textContent = isBg ? "removed · transparent" : "not traced";
+    } else {
+      sub.innerHTML = `<span class="color-bar"><span style="width:${Math.min(100, layer.pct)}%"></span></span>${layer.pct < 1 ? "<1" : Math.round(layer.pct)}%`;
+    }
+    meta.append(name, sub);
+
+    li.append(eye, chip, meta);
+    colorList.appendChild(li);
+    if (state.colorEditorOpen === layer.color) colorList.appendChild(buildColorEditor(layer));
   });
-  return Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .map(([color, count]) => ({ color, count }));
+}
+
+function buildColorEditor(layer) {
+  const li = document.createElement("li");
+  li.className = "color-editor";
+
+  const targets = state.colorLayers.filter(l => l.color !== layer.color && !l.mergeInto);
+  if (targets.length) {
+    const row = document.createElement("div");
+    row.className = "color-editor-row";
+    const label = document.createElement("span");
+    label.className = "color-editor-label";
+    label.textContent = "Merge into";
+    row.appendChild(label);
+    targets.forEach(t => {
+      const { output } = resolveLayer(t);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "merge-target";
+      b.style.background = output;
+      b.title = `Merge into ${output}${t.color === state.colorBackground ? " (background)" : ""}`;
+      b.classList.toggle("off", !t.enabled);
+      b.addEventListener("click", () => mergeColor(layer.color, t.color));
+      row.appendChild(b);
+    });
+    li.appendChild(row);
+  }
+
+  const row2 = document.createElement("div");
+  row2.className = "color-editor-row";
+  const label2 = document.createElement("span");
+  label2.textContent = "Recolor";
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = resolveLayer(layer).output;
+  input.setAttribute("aria-label", "New color");
+  input.addEventListener("change", () => recolorColor(layer.color, input.value));
+  row2.append(label2, input);
+  if (layerIsEdited(layer)) {
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "btn btn-ghost btn-sm";
+    restore.textContent = "Restore original";
+    restore.style.marginLeft = "auto";
+    restore.addEventListener("click", () => restoreColor(layer.color));
+    row2.appendChild(restore);
+  }
+  li.appendChild(row2);
+  return li;
+}
+
+function renderSvgColorRows() {
+  const rows = svgColorRows();
+  btnResetColors.disabled = state.undoStack.length === 0;
+  colorsHint.textContent = rows.length
+    ? "Colors in your SVG. Eye: show or hide. Swatch: merge into another color or recolor."
+    : "No solid fill colors found in this SVG.";
+  rows.forEach(r => {
+    const shown = r.visible > 0;
+    const li = document.createElement("li");
+    li.className = "color-row";
+    li.classList.toggle("off", !shown);
+    li.classList.toggle("open", state.colorEditorOpen === r.color);
+
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "color-eye";
+    eye.innerHTML = shown ? EYE_ON : EYE_OFF;
+    eye.setAttribute("aria-pressed", String(shown));
+    eye.title = shown ? "Hide this color" : "Show this color";
+    eye.addEventListener("click", () => toggleColor(r.color));
+
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "color-chip";
+    chip.style.background = r.color;
+    chip.title = "Merge or recolor";
+    chip.addEventListener("click", () => {
+      state.colorEditorOpen = state.colorEditorOpen === r.color ? null : r.color;
+      renderColorsPanel();
+    });
+
+    const meta = document.createElement("div");
+    meta.className = "color-meta";
+    meta.innerHTML = `<span class="color-name">${r.color}</span><span class="color-sub">${r.count} shape${r.count === 1 ? "" : "s"}${shown ? "" : " · hidden"}</span>`;
+    li.append(eye, chip, meta);
+    colorList.appendChild(li);
+
+    if (state.colorEditorOpen === r.color) {
+      const ed = document.createElement("li");
+      ed.className = "color-editor";
+      const others = rows.filter(o => o.color !== r.color);
+      if (others.length) {
+        const row = document.createElement("div");
+        row.className = "color-editor-row";
+        row.innerHTML = '<span class="color-editor-label">Merge into</span>';
+        others.slice(0, 24).forEach(o => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "merge-target";
+          b.style.background = o.color;
+          b.title = `Merge into ${o.color}`;
+          b.addEventListener("click", () => { state.colorEditorOpen = null; mergeColor(r.color, o.color); });
+          row.appendChild(b);
+        });
+        ed.appendChild(row);
+      }
+      const row2 = document.createElement("div");
+      row2.className = "color-editor-row";
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = r.color;
+      input.setAttribute("aria-label", "New color");
+      input.addEventListener("change", () => recolorColor(r.color, input.value));
+      const lbl = document.createElement("span");
+      lbl.textContent = "Recolor";
+      row2.append(lbl, input);
+      ed.appendChild(row2);
+      colorList.appendChild(ed);
+    }
+  });
 }
 
 // ── Tabs ──────────────────────────────────────────────────────
@@ -1784,9 +1916,9 @@ async function downloadSvg() {
     let svgStr = serializeSvgForExport();
     if (!svgStr) return;
 
-    // Full-res re-trace only when preview was downscaled and DOM has no structural edits.
-    if (state.resizePreview && state.undoStack.length === 0
-        && state.hiddenColors.size === 0 && Object.keys(state.recoloredColors).length === 0) {
+    // Full-res re-trace only for traced input whose preview was downscaled and
+    // whose DOM has no manual edits. An uploaded SVG is exported as-is.
+    if (state.kind !== "svg" && state.resizePreview && state.undoStack.length === 0) {
       const fullRes = await fetchFinalSvg();
       if (fullRes) svgStr = fullRes;
     }
@@ -1810,7 +1942,7 @@ async function fetchFinalSvg() {
       image_id: state.imageId,
       engine: state.engine,
       params: state.params,
-      quantize_colors: state.quantizeColors,
+      color_layers: traceColorLayers(),
       resize_preview: false, // full-resolution re-trace for the export
     };
     const res = await fetch("/api/vectorize", {
@@ -1828,43 +1960,6 @@ async function fetchFinalSvg() {
   } finally {
     endTracing();
   }
-}
-
-function applyPaletteEdits(svgStr) {
-  // Apply hide/recolor edits to a fresh SVG string. Used so a full-resolution
-  // re-trace can carry the same palette edits the user made on the preview.
-  const hasEdits =
-    state.hiddenColors.size > 0 ||
-    Object.keys(state.recoloredColors).length > 0;
-  if (!hasEdits) return svgStr;
-
-  const doc = new DOMParser().parseFromString(svgStr, "image/svg+xml");
-  const root = doc.documentElement;
-
-  // Recolors first, so a subsequent hide-by-original-color still finds nothing
-  // when the user already recolored it (we only hide what still has the original fill).
-  for (const [original, replacement] of Object.entries(state.recoloredColors)) {
-    root.querySelectorAll(`[fill="${original}"], [fill="${original.toUpperCase()}"]`).forEach(el => {
-      el.setAttribute("fill", replacement);
-    });
-  }
-
-  state.hiddenColors.forEach(color => {
-    // Match both the original color (in case of no recolor) and any current value
-    // the recolor map points at, so a "recolor then hide" sequence still works.
-    const candidates = new Set([color, color.toUpperCase()]);
-    if (state.recoloredColors[color]) {
-      candidates.add(state.recoloredColors[color]);
-      candidates.add(state.recoloredColors[color].toUpperCase());
-    }
-    candidates.forEach(c => {
-      root.querySelectorAll(`[fill="${c}"]`).forEach(el => {
-        el.setAttribute("style", (el.getAttribute("style") || "") + ";display:none");
-      });
-    });
-  });
-
-  return new XMLSerializer().serializeToString(root);
 }
 
 function setDownloadButtonsBusy(busy) {
@@ -1885,9 +1980,7 @@ btnReset.addEventListener("click", () => {
   e.param_schema.forEach(p => { defaults[p.name] = p.default; });
   buildParamControls(defaults);
   presetSelect.value = "";
-  quantizeSlider.value = 0;
-  quantizeVal.textContent = "Off";
-  state.quantizeColors = 0;
+  setColorCount(0);
   state.resizePreview = true;
   resizeCheckbox.checked = true;
   scheduleVectorize();

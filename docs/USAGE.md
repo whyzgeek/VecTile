@@ -8,7 +8,7 @@ This guide covers the full workflow, every major control, and engine parameters.
 
 1. **Upload** a raster image, PDF, or SVG.
 2. **Vectorize** — adjust presets and parameters; preview updates live.
-3. **Edit** (optional) — clean up paths, recolor, hide layers, set background.
+3. **Edit** (optional) — choose which colors to trace (drop the background, merge similar shades, recolor), then touch up shapes with Quick Edit.
 4. **Download SVG** — export at full resolution when possible.
 5. **Print** — tile across pages or export a single large PDF.
 
@@ -46,7 +46,9 @@ Shown only for PDF uploads.
 - **Render DPI** — resolution used when rasterizing the PDF page (72–600). Higher = sharper trace, slower.
 
 ### Mode preset
-Five built-in presets (Color Illustration, Outline, Pixel Art, Line Drawing, Photo Posterize). Choosing one sets engine, parameters, and pre-trace options. **Custom** keeps your manual settings.
+Built-in presets for the active engine: Color Illustration, Outline, Pixel Art and Photo Posterize (VTracer); Line Drawing and **Logo / Sign from Photo** (B&W). Choosing one sets parameters and pre-trace options. **Custom** keeps your manual settings.
+
+**Logo / Sign from Photo** is for a logo photographed on a surface: an embossed or printed sign, paper, a wall. It evens out shadows and uneven lighting before thresholding, so thin strokes and small text survive without picking up cast shadows. If strokes come out broken, raise Threshold (e.g. 180); if shadow blotches appear, lower it (e.g. 160). Remove leftover frame edges with Box erase.
 
 ### Engine
 
@@ -58,11 +60,10 @@ Five built-in presets (Color Illustration, Outline, Pixel Art, Line Drawing, Pho
 ### Pre-trace
 
 - **Resize for preview** — downscales large images (max 2048 px side) before tracing for faster preview. Download can still re-trace at full resolution if you have not edited the SVG.
-- **Reduce colors** — optional palette quantization (0 = off, up to 32 colors) before tracing.
 
 ### Parameters
 
-Engine-specific sliders and toggles. Changes debounce and re-trace automatically.
+Engine-specific sliders and toggles. Changes debounce and re-trace automatically. Options that have no effect under the current settings are hidden (e.g. the corner/length/splice thresholds only appear in *Spline* curve mode; Hierarchy, Color Precision and Layer Difference only in VTracer *Color* mode). Presets are filtered to the active engine.
 
 **VTracer**
 
@@ -84,6 +85,8 @@ Engine-specific sliders and toggles. Changes debounce and re-trace automatically
 | Parameter | Effect |
 |-----------|--------|
 | Threshold | Pixels darker than this become black |
+| Even out lighting | Remove shadows and light falloff first; Threshold then compares each pixel to its surroundings (~170–185 works well) |
+| Smooth texture | Blur paper grain/noise before thresholding (0 = off; blurs small text) |
 | Invert | Swap black and white |
 | Sharpen edges | Pre-sharpen for crisper lines |
 | Filter Speckle | Remove small noise |
@@ -92,7 +95,27 @@ Engine-specific sliders and toggles. Changes debounce and re-trace automatically
 ### Actions
 
 - **Reset** — restore default parameters for the current engine.
-- **Download SVG** — export the working SVG (includes Quick Edit and palette changes). Re-traces at full resolution when preview was downscaled and the SVG is unedited.
+- **Download SVG** — export the working SVG (includes Colors and Quick Edit changes). Re-traces at full resolution when preview was downscaled and the SVG is unedited.
+
+---
+
+## Colors (right panel)
+
+Shown for color tracing (VTracer in *Color* mode) and for uploaded SVGs. Hidden for B&W output, where it has no effect.
+
+For images and PDFs the colors are chosen **before** tracing, so they change the contours, not just the look:
+
+1. Set **Colors to trace** (*All* = trace the image as-is). The image is snapped to that many dominant colors; near-identical shades are folded together, so you may get fewer. The color covering most of the image edge is tagged **Background**.
+2. Each row shows the color and how much of the image it covers.
+
+| Action | How |
+|--------|-----|
+| **Leave out a color** | Click the **eye**. The color becomes transparent and is not traced. On the Background row this removes the background. |
+| **Merge colors** | Click the **swatch**, then pick a color under *Merge into*. Both become one region, which removes slivers and halos and gives cleaner outlines. |
+| **Recolor** | Click the **swatch** and choose a new color under *Recolor*. |
+| **Restore** | *Restore original* in the row's editor, or **Reset** for all colors. |
+
+Every change re-traces. For an uploaded SVG (nothing to re-trace) the rows are the SVG's own fill colors, and hide/merge/recolor edit those fills directly.
 
 ---
 
@@ -113,11 +136,9 @@ Edits apply to the SVG on the **Vectorized** canvas and flow to download and pri
 
 ### Paint color picker
 
-HSL square, hue slider, hex field, and recent colors. Used by click/box paint.
+HSL square, hue slider, hex field, and recent colors. Used by click/box paint. Paint tools are hidden for B&W output.
 
-### Background
-
-Click the **background swatch** — it loads into the paint picker above. Adjust color to update the canvas background live. Click the swatch again to finish.
+Quick Edit changes are made on the traced SVG, so any re-trace (a parameter or Colors change) discards them. Settle the colors first, then touch up.
 
 ### Remove speckles
 
@@ -126,19 +147,6 @@ Set a size threshold, then **Clean** to delete paths smaller than that (in scree
 ### Undo / Redo
 
 Up to 30 steps of edit history.
-
----
-
-## Color palette (right panel)
-
-Appears after tracing. Each swatch is one traced fill color.
-
-| Action | How |
-|--------|-----|
-| **Hide layer** | Click the swatch — toggles visibility of all paths with that color. |
-| **Recolor layer** | Click the **ring** on a swatch — loads that color into the paint picker above; adjust HSL/hex to recolor live. Click the ring again to finish. |
-| **Set paint color** | Click the **●** button — sets the Quick Edit paint color (does not recolor the layer). |
-| **Reset** | Restore the original trace colors and visibility. |
 
 ---
 

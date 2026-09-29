@@ -49,12 +49,12 @@ Works well for classroom displays, event banners, shop signs, and craft projects
 | **Cost** | Subscription or per-image credits | Free (GPL v2) |
 | **Privacy** | Upload images to their servers | 100% local — files never leave your PC |
 | **Poster printing** | Export or order prints; tiling often paid/cloud | **Free tile PDF** with cut/glue guides on standard paper |
-| **Editing** | Limited or none | In-app erase, paint, palette, background |
+| **Editing** | Limited or none | Pre-trace color control, in-app erase and paint |
 | **Offline** | Requires internet | Works offline after install |
 | **PDF input** | Often raster-only | Multi-page PDF with DPI control |
 | **SVG workflow** | Uncommon | Upload SVG from Inkscape, edit, re-export |
 
-Inkscape and Adobe Illustrator trace bitmaps too, but Vectile adds **live parameter preview**, **palette editing**, and **home-printer poster tiling** in one focused tool — without a full DTP suite or Canva subscription.
+Inkscape and Adobe Illustrator trace bitmaps too, but Vectile adds **live parameter preview**, **pre-trace color control**, and **home-printer poster tiling** in one focused tool — without a full DTP suite or Canva subscription.
 
 ---
 
@@ -68,12 +68,14 @@ Inkscape and Adobe Illustrator trace bitmaps too, but Vectile adds **live parame
 - **Resize for preview** for fast iteration on large images; full-res SVG on download
 - Tabs: Original, Vectorized, Side by Side, Print
 
+### Colors
+- Pick how many colors to trace; the background is detected automatically
+- Leave a color out (e.g. remove the background), merge similar shades for cleaner outlines, or recolor, all before tracing
+
 ### Quick Edit
 - Erase or paint paths (click or box select)
 - HSL color picker with eyedropper
-- Background color behind artwork
 - Speckle cleanup, undo/redo
-- **Color palette** — hide or recolor any traced color; changes export to SVG and print
 
 ### Print (poster tiling)
 - **Tile mode** — split any poster across A4, Letter, Legal, Tabloid, or custom paper; set grid (e.g. 2×2, 3×4) or final dimensions

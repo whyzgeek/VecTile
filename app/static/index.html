@@ -82,13 +82,6 @@
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <div class="control-row">
-          <label for="quantize-colors">Reduce colors</label>
-          <div class="slider-group">
-            <input type="range" id="quantize-colors" min="0" max="32" step="1" value="0" />
-            <output for="quantize-colors" id="quantize-colors-val">Off</output>
-          </div>
-        </div>
       </section>
 
       <section class="section" data-tab-context="vectorize">
@@ -338,9 +331,28 @@
       </div>
     </section>
 
-    <!-- ═══════════════════ RIGHT: QUICK EDIT + PALETTE (vectorize only) ═══════ -->
+    <!-- ═══════════════════ RIGHT: COLORS + QUICK EDIT (vectorize only) ═══════ -->
     <aside class="panel panel-palette" id="panel-palette" data-tab-context="vectorize">
       <div class="panel-palette-scroll">
+        <!-- Colors: pre-trace for raster input (drives the tracer), direct fill edits for SVG input -->
+        <section class="colors-section" id="colors-section">
+          <div class="palette-header">
+            <span class="section-title" style="margin:0">Colors</span>
+            <div class="palette-actions">
+              <button class="btn btn-ghost btn-sm" id="btn-reset-colors" disabled title="Undo all color changes">Reset</button>
+            </div>
+          </div>
+          <div class="control-row" id="color-count-row">
+            <label for="color-count">Colors to trace</label>
+            <div class="slider-group">
+              <input type="range" id="color-count" min="1" max="24" step="1" value="1" />
+              <output for="color-count" id="color-count-val">All</output>
+            </div>
+          </div>
+          <p class="hint-text" id="colors-hint"></p>
+          <ul class="color-list" id="color-list" aria-label="Colors"></ul>
+        </section>
+
         <section class="quick-edit-section" id="quick-edit-section">
           <div class="palette-header">
             <span class="section-title" style="margin:0">Quick Edit</span>
@@ -349,7 +361,7 @@
               <button class="btn btn-ghost btn-sm" id="btn-edit-redo" disabled title="Redo">Redo</button>
             </div>
           </div>
-          <p class="hint-text quick-edit-hint" id="quick-edit-hint">Edit on the Vectorized tab canvas.</p>
+          <p class="hint-text quick-edit-hint" id="quick-edit-hint">Touch up the traced shapes on the Vectorized tab. Re-tracing discards these edits.</p>
           <div class="edit-tool-grid" id="edit-tool-grid" role="group" aria-label="Edit tools">
             <button type="button" class="edit-tool-btn active" data-edit-tool="pan" title="Pan and zoom">Pan</button>
             <button type="button" class="edit-tool-btn" data-edit-tool="clickErase" title="Click a shape to remove it">Click erase</button>
@@ -371,10 +383,6 @@
               <button type="button" class="edit-tool-btn" data-edit-tool="boxPaint" title="Drag a box to paint shapes">Box paint</button>
             </div>
           </div>
-          <div class="control-row edit-bg-section">
-            <label for="btn-edit-bg">Background</label>
-            <button type="button" class="edit-bg-swatch" id="btn-edit-bg" disabled title="Click to edit with paint picker above"></button>
-          </div>
           <div class="control-row">
             <label for="edit-speckle">Remove speckles</label>
             <div class="slider-group">
@@ -382,20 +390,6 @@
               <button type="button" class="btn btn-ghost btn-sm" id="btn-remove-speckles" disabled>Clean</button>
             </div>
           </div>
-        </section>
-
-        <section class="palette-section">
-          <div class="palette-header">
-            <span class="section-title" style="margin:0">Color Palette</span>
-            <div class="palette-actions">
-              <button class="btn btn-ghost btn-sm" id="btn-reset-palette" disabled>Reset</button>
-            </div>
-          </div>
-          <p class="hint-text" id="palette-hint">Click swatch to hide. Click ring to recolor with the paint picker above.</p>
-          <div id="palette-placeholder" class="palette-placeholder">
-            <p>Palette appears after tracing</p>
-          </div>
-          <div id="palette-grid" class="palette-grid"></div>
         </section>
       </div>
     </aside>

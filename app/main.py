@@ -5,6 +5,7 @@ Routes:
   POST /api/upload             -> upload an image or PDF; returns image_id + metadata
   POST /api/pdf-render         -> re-rasterize a PDF at a different page/DPI
   POST /api/vectorize          -> trace the image; returns SVG + palette
+  POST /api/colors             -> dominant colors of the source image (pre-trace editing)
   GET  /api/engines            -> list engines + their param schemas
   GET  /api/presets            -> named presets (engine + params)
   GET  /api/print/paper-sizes  -> standard paper presets
@@ -25,13 +26,17 @@ from pydantic import BaseModel, Field
 
 from .engines import ENGINES
 from .preprocess import (
+    analyze_colors,
+    apply_color_layers,
     extract_palette,
     extract_palette_from_svg,
     is_svg_bytes,
     parse_svg_user_units,
     quantize,
+    remove_key_paths,
     resize_for_preview,
 )
+from .trace_worker import TraceError, trace as run_trace
 from .pdf_input import is_pdf, get_page_count, render_page
 from . import session as sess
 from .printing import (
@@ -54,6 +59,20 @@ ALLOWED_MIME = {
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Vectile", version="1.0.0")
+
+
+@app.middleware("http")
+async def revalidate_static(request: Request, call_next):
+    """Make the browser revalidate the UI files on every load.
+
+    Without this, a heuristically cached index.html can be paired with a newer
+    app.js after an update, and the script fails on missing elements.
+    Revalidation is a cheap 304 when nothing changed.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # ---------- Presets -----------------------------------------------------------
@@ -111,6 +130,23 @@ PRESETS = [
         "resize_preview": True,
     },
     {
+        # Logos photographed on a surface (embossed signs, printed paper):
+        # flatten_lighting removes cast shadows and light falloff so one
+        # threshold works across the whole image; no sharpen/smooth keeps
+        # small text crisp.
+        "id": "logo_photo",
+        "label": "Logo / Sign from Photo",
+        "engine": "potrace",
+        "params": {
+            "threshold": 170, "invert": False, "sharpen": False,
+            "flatten_lighting": True, "smooth": 0,
+            "mode": "spline", "filter_speckle": 3, "corner_threshold": 60,
+            "length_threshold": 3.0, "splice_threshold": 45, "path_precision": 4,
+        },
+        "quantize_colors": 0,
+        "resize_preview": True,
+    },
+    {
         "id": "photo_posterize",
         "label": "Photo Posterize",
         "engine": "vtracer",
@@ -141,6 +177,8 @@ async def list_engines():
             "name": engine.name,
             "description": engine.description,
             "param_schema": engine.param_schema,
+            "supports_quantize": getattr(engine, "supports_quantize", True),
+            "quantize_visible_when": getattr(engine, "quantize_visible_when", None),
         }
         for engine_id, engine in ENGINES.items()
     ]
@@ -263,16 +301,44 @@ async def pdf_render(req: PdfRenderRequest):
     return {"width": w, "height": h, "palette": palette}
 
 
+class ColorLayer(BaseModel):
+    color: str                 # analyzed source color (#rrggbb)
+    output: str | None = None  # color to trace it as; None keeps `color`
+    enabled: bool = True       # False drops the color (transparent, not traced)
+
+
 class VectorizeRequest(BaseModel):
     image_id: str
     engine: str = "vtracer"
     params: dict = {}
     quantize_colors: int = 0
+    color_layers: list[ColorLayer] | None = None  # overrides quantize_colors
     resize_preview: bool = True
 
 
+class ColorsRequest(BaseModel):
+    image_id: str
+    n_colors: int = Field(8, ge=2, le=64)
+    resize_preview: bool = True
+
+
+@app.post("/api/colors")
+async def colors(req: ColorsRequest):
+    entry = sess.get_entry(req.image_id)
+    if entry is None:
+        raise HTTPException(404, "Session not found — please re-upload")
+    img = Image.open(entry.raster_path).convert("RGB")
+    if req.resize_preview:
+        img = resize_for_preview(img)
+    palette, background = analyze_colors(img, req.n_colors)
+    return {"colors": palette, "background": background}
+
+
 @app.post("/api/vectorize")
-async def vectorize(req: VectorizeRequest):
+def vectorize(req: VectorizeRequest):
+    # Sync on purpose: FastAPI runs it in a worker thread, so a slow trace
+    # never blocks other requests. The trace itself runs in a limited child
+    # process (see trace_worker).
     entry = sess.get_entry(req.image_id)
     if entry is None:
         raise HTTPException(404, "Session not found — please re-upload")
@@ -286,8 +352,15 @@ async def vectorize(req: VectorizeRequest):
     if req.resize_preview:
         img = resize_for_preview(img)
 
-    if req.quantize_colors >= 2:
-        img = quantize(img, req.quantize_colors)
+    key_color = None
+    if getattr(engine, "supports_quantize", True):
+        if req.color_layers:
+            try:
+                img, key_color = apply_color_layers(img, [l.model_dump() for l in req.color_layers])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+        elif req.quantize_colors >= 2:
+            img = quantize(img, req.quantize_colors)
 
     # Write the (possibly modified) image to a temp path for the engine
     import tempfile
@@ -296,12 +369,15 @@ async def vectorize(req: VectorizeRequest):
     try:
         img.save(tmp_path)
         t0 = time.perf_counter()
-        svg = engine.vectorize(tmp_path, req.params)
+        svg = run_trace(req.engine, tmp_path, req.params, key=req.image_id)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    except TraceError as exc:
+        raise HTTPException(409 if exc.superseded else 422, str(exc))
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+    svg = remove_key_paths(svg, key_color)
     palette = extract_palette_from_svg(svg)
 
     return {"svg": svg, "palette": palette, "elapsed_ms": elapsed_ms}

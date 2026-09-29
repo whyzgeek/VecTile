@@ -6,6 +6,7 @@ to produce crisp single-color output without requiring native libpotrace.
 import tempfile
 import os
 import vtracer
+import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance
 from .base import int_param, float_param, bool_param, select_param
 
@@ -13,6 +14,8 @@ _DEFAULTS = {
     "threshold": 128,
     "invert": False,
     "sharpen": True,
+    "flatten_lighting": False,
+    "smooth": 0,
     "filter_speckle": 8,
     "corner_threshold": 60,
     "length_threshold": 3.0,
@@ -22,16 +25,47 @@ _DEFAULTS = {
 }
 
 
+# Marks up to about 1/LIGHTING_MARK_FRACTION of the image's short side thick
+# (letters, leaves) are treated as ink; anything broader counts as lighting.
+LIGHTING_MARK_FRACTION = 24
+
+
+def flatten_lighting(gray: Image.Image) -> Image.Image:
+    """Divide out the slowly varying background (light falloff, cast shadows).
+
+    The background is estimated on a quarter-size copy: a max filter wipes out
+    the dark marks, then a blur smooths what is left. In the result 255 means
+    "as bright as the local background", so a threshold of ~180 keeps marks
+    about 30% darker than their surroundings wherever they sit.
+    """
+    w, h = gray.size
+    small = gray.resize((max(1, w // 4), max(1, h // 4)), Image.BILINEAR)
+    k = max(3, (min(small.size) // LIGHTING_MARK_FRACTION) | 1)  # odd kernel
+    bg = small.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.GaussianBlur(k))
+    bg = np.asarray(bg.resize((w, h), Image.BILINEAR), dtype=np.float32)
+    g = np.asarray(gray, dtype=np.float32)
+    return Image.fromarray(np.clip(g / np.maximum(bg, 1.0) * 255.0, 0, 255).astype(np.uint8), "L")
+
+
 class PotraceEngine:
     name = "potrace"
     description = "Best for B&W logos, line art, sketches and laser-cut prep"
+    # Output is always thresholded to black/white, so color reduction is moot.
+    supports_quantize = False
+    quantize_visible_when = None
     param_schema = [
         int_param("threshold", "Threshold", 128, 0, 255,
-                  hint="Pixels darker than this become black; lighter become white"),
+                  hint="Pixels darker than this become black; lighter become white. With "
+                       "'Even out lighting' on, ~170-185 keeps marks darker than their surroundings"),
         bool_param("invert", "Invert", False,
                    hint="Swap black and white before tracing"),
         bool_param("sharpen", "Sharpen edges", True,
                    hint="Apply edge sharpening before thresholding for crisper results"),
+        bool_param("flatten_lighting", "Even out lighting", False,
+                   hint="Remove shadows and uneven light first, so Threshold compares each "
+                        "pixel to its surroundings. For photos of logos, signs and paper"),
+        int_param("smooth", "Smooth texture", 0, 0, 4,
+                  hint="Blur paper grain or noise before thresholding (0 = off)"),
         select_param("mode", "Curve Mode", "spline",
                      [{"value": "spline", "label": "Spline (smooth)"},
                       {"value": "polygon", "label": "Polygon (sharp)"}],
@@ -39,11 +73,14 @@ class PotraceEngine:
         int_param("filter_speckle", "Filter Speckle", 8, 0, 128,
                   hint="Discard regions smaller than this many pixels"),
         int_param("corner_threshold", "Corner Threshold", 60, 0, 180,
-                  hint="Angle below which corners are preserved"),
+                  hint="Angle below which corners are preserved",
+                  visible_when={"mode": ["spline"]}),
         float_param("length_threshold", "Length Threshold", 3.0, 0.0, 10.0, 0.5,
-                    hint="Minimum path segment length"),
+                    hint="Minimum path segment length",
+                    visible_when={"mode": ["spline"]}),
         int_param("splice_threshold", "Splice Threshold", 45, 0, 180,
-                  hint="Angle at which to splice a curve segment"),
+                  hint="Angle at which to splice a curve segment",
+                  visible_when={"mode": ["spline"]}),
         int_param("path_precision", "Path Precision", 8, 1, 8,
                   hint="Decimal places in SVG path coordinates"),
     ]
@@ -64,6 +101,11 @@ class PotraceEngine:
 
         # Convert to grayscale → binary via threshold
         gray = img.convert("L")
+        smooth = int(merged.get("smooth", 0))
+        if smooth > 0:
+            gray = gray.filter(ImageFilter.GaussianBlur(smooth))
+        if merged.get("flatten_lighting", False):
+            gray = flatten_lighting(gray)
         threshold = int(merged["threshold"])
         binary = gray.point(lambda p: 255 if p > threshold else 0, "L")
 

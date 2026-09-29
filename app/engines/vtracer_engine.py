@@ -30,6 +30,9 @@ _DEFAULTS = {
 class VtracerEngine:
     name = "vtracer"
     description = "Best for color images, illustrations and photos"
+    # Pre-trace color reduction only matters when tracing in color.
+    supports_quantize = True
+    quantize_visible_when = {"colormode": ["color"]}
     param_schema = [
         select_param("colormode", "Color Mode", "color",
                      [{"value": "color", "label": "Color"},
@@ -38,7 +41,8 @@ class VtracerEngine:
         select_param("hierarchical", "Hierarchy", "stacked",
                      [{"value": "stacked", "label": "Stacked"},
                       {"value": "cutout", "label": "Cutout"}],
-                     "Stacked layers paths; Cutout creates holes"),
+                     "Stacked layers paths; Cutout creates holes",
+                     visible_when={"colormode": ["color"]}),
         select_param("mode", "Curve Mode", "spline",
                      [{"value": "spline", "label": "Spline (smooth)"},
                       {"value": "polygon", "label": "Polygon (sharp)"},
@@ -47,15 +51,20 @@ class VtracerEngine:
         int_param("filter_speckle", "Filter Speckle", 4, 0, 128,
                   hint="Discard regions smaller than this many pixels"),
         int_param("color_precision", "Color Precision", 6, 1, 8,
-                  hint="Number of significant bits per channel (lower = fewer colors)"),
-        int_param("layer_difference", "Layer Difference", 16, 0, 256,
-                  hint="Minimum color difference to split into separate layers"),
+                  hint="Number of significant bits per channel (lower = fewer colors)",
+                  visible_when={"colormode": ["color"]}),
+        int_param("layer_difference", "Layer Difference", 16, 1, 256,
+                  hint="Minimum color difference to split into separate layers",
+                  visible_when={"colormode": ["color"]}),
         int_param("corner_threshold", "Corner Threshold", 60, 0, 180,
-                  hint="Angle in degrees below which corners are preserved"),
+                  hint="Angle in degrees below which corners are preserved",
+                  visible_when={"mode": ["spline"]}),
         float_param("length_threshold", "Length Threshold", 4.0, 0.0, 10.0, 0.5,
-                    hint="Minimum path segment length"),
+                    hint="Minimum path segment length",
+                    visible_when={"mode": ["spline"]}),
         int_param("splice_threshold", "Splice Threshold", 45, 0, 180,
-                  hint="Angle at which to splice a curve segment"),
+                  hint="Angle at which to splice a curve segment",
+                  visible_when={"mode": ["spline"]}),
         int_param("path_precision", "Path Precision", 8, 1, 8,
                   hint="Decimal places in SVG path coordinates"),
     ]
